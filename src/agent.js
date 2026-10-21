@@ -16,7 +16,17 @@ import { reflexState, worldSnapshot } from './perception.js';
 const { pathfinder, Movements } = pathfinderPkg;
 const ESCALATE_COOLDOWN_MS = 20000;
 const THREAT_ALERT = 0.75;
-const PLAYER_MADE = /(_planks|_door|_trapdoor|glass|glass_pane|_wool|_carpet|bricks|_slab|_stairs|_fence|_fence_gate|_wall|chest|barrel|furnace|smoker|crafting_table|_bed|torch|lantern|sign|bookshelf|concrete|terracotta|rail|hopper|anvil|enchanting_table|beacon|smooth_stone|polished_|chiseled_)/;
+// Jev sometimes picks flee/fight with very low confidence; acting on those
+// makes the bot abandon its goal over nothing.
+const MIN_REFLEX_CONFIDENCE = 0.3;
+// The server's player hitbox is 0.6 wide as a float (0.60000002), so a body
+// that stops exactly flush with a block (as prismarine-physics does at 0.3
+// half-width) overlaps it by ~1e-8 there. Paper treats that as clipping into
+// the block and snaps every move back. A hair wider keeps us just clear.
+const HALF_WIDTH = 0.3 + 1e-5;
+const SNAPBACK_LIMIT = 5; // server corrections within SNAPBACK_WINDOW_MS before we re-center
+const SNAPBACK_WINDOW_MS = 2000;
+const PLAYER_MADE =/(_planks|_door|_trapdoor|glass|glass_pane|_wool|_carpet|bricks|_slab|_stairs|_fence|_fence_gate|_wall|chest|barrel|furnace|smoker|crafting_table|_bed|torch|lantern|sign|bookshelf|concrete|terracotta|rail|hopper|anvil|enchanting_table|beacon|smooth_stone|polished_|chiseled_)/;
 
 export class Agent {
   constructor(config) {
@@ -40,7 +50,7 @@ export class Agent {
     bot.loadPlugin(pvpPkg.plugin);
     bot.loadPlugin(collectBlockPkg.plugin);
 
-    bot.once('spawn', () => this.#onSpawn());
+    bot.once('spawn', () => this.#onSpawn().catch((err) => this.log(`spawn error: ${err.message}`)));
     bot.on('kicked', (reason) => this.log(`kicked: ${typeof reason === 'string' ? reason : JSON.stringify(reason)}`));
     bot.on('error', (err) => this.log(`error: ${err.message}`));
     bot.on('end', (reason) => {
@@ -50,9 +60,11 @@ export class Agent {
     });
   }
 
-  #onSpawn() {
+  async #onSpawn() {
     const bot = this.bot;
     const log = (m) => this.log(m);
+    bot.physics.playerHalfWidth = HALF_WIDTH;
+    this.#watchSnapbacks();
     const movements = new Movements(bot);
     movements.allowSprinting = true;
     // Don't tunnel through things other players build while walking or mining.
@@ -92,6 +104,9 @@ export class Agent {
       this.wake('you woke up after sleeping; this is a fresh start for your mind');
     });
 
+    // Block searches and the brain's first look around need the nearby world.
+    await Promise.race([bot.waitForChunksToLoad(), new Promise((r) => setTimeout(r, 15000))]);
+
     // Resume whatever the previous instance was doing.
     if (this.memory.state.goal) this.executor.setGoal(this.memory.state.goal);
     this.wake(this.memory.state.generation === 1 ? 'you just joined the world for the first time' : 'you just reconnected');
@@ -102,6 +117,24 @@ export class Agent {
       if (!this.executor.goal && quiet > this.cfg.brain.heartbeatMs) this.wake('no current goal');
       else if (quiet > this.cfg.brain.heartbeatMs * 4) this.wake('routine check-in');
     }, 5000);
+  }
+
+  // If we're already pressed into a wall (e.g. spawned or teleported there),
+  // every move gets corrected. Step to the middle of our own block to get out.
+  #watchSnapbacks() {
+    const bot = this.bot;
+    let recent = [];
+    bot.on('forcedMove', () => {
+      const now = Date.now();
+      recent = recent.filter((t) => now - t < SNAPBACK_WINDOW_MS);
+      recent.push(now);
+      if (recent.length < SNAPBACK_LIMIT) return;
+      recent = [];
+      const p = bot.entity.position;
+      p.x = Math.floor(p.x) + 0.5;
+      p.z = Math.floor(p.z) + 0.5;
+      this.log('server kept correcting our position; re-centred in our block');
+    });
   }
 
   #teardown() {
@@ -160,7 +193,7 @@ export class Agent {
         }
       }
 
-      if (d.action !== 'continue_goal' && !this.executor.reflexRunning) {
+      if (d.action !== 'continue_goal' && !this.executor.reflexRunning && (d.confidence ?? 1) >= MIN_REFLEX_CONFIDENCE) {
         this.log(`reflex: ${d.action} (${d.source}${d.confidence ? ' ' + d.confidence.toFixed(2) : ''})`);
         this.executor.reflex(d.action, this.#reflexContext(d));
       }

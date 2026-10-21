@@ -64,7 +64,7 @@ Steps:
 - {"log": <expr>}, {"return": <expr>}, {"fail": <expr>}
 
 Expressions: literals, "$refs", {"x": .., "y": .., "z": ..} objects with exprs inside, and operators:
-{"offset": [pos, dx, dy, dz]}, {"add": [a, b]}, {"sub": [a, b]}, {"len": list}, {"first": list}, {"inv": "item"} (count held),
+{"offset": [pos, dx, dy, dz]}, {"add": [a, b]} (numbers, or joins two lists), {"sub": [a, b]}, {"len": list}, {"first": list}, {"inv": "item"} (count held),
 {"filter": [list, "field.path", value]}, {"eq"|"ne"|"gt"|"gte"|"lt"|"lte": [a, b]}, {"not": c}, {"and": [..]}, {"or": [..]}
 
 Actions (positions are {x,y,z}):
@@ -217,7 +217,7 @@ function evaluate(e, vars) {
     const a = () => evaluate(e[op], vars);
     switch (op) {
       case 'offset': { const [p, dx, dy, dz] = a(); return { x: p.x + dx, y: p.y + dy, z: p.z + dz }; }
-      case 'add': { const [x, y] = a(); return x + y; }
+      case 'add': { const [x, y] = a(); return Array.isArray(x) && Array.isArray(y) ? [...x, ...y] : x + y; }
       case 'sub': { const [x, y] = a(); return x - y; }
       case 'len': return a()?.length ?? 0;
       case 'first': return a()?.[0] ?? null;
@@ -258,7 +258,20 @@ export async function runSteps(steps, args, ctx) {
     const raw = evaluate(step.args ?? {}, vars);
     const list = Array.isArray(raw) ? raw : params.map((p) => raw[p]);
     guard();
-    return api[step.do](...list);
+    // The deadline is otherwise only checked between steps, so a single action
+    // that never settles (a move it can't finish) would hang the whole list.
+    let timer;
+    const overtime = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        try { ctx.bot.pathfinder?.setGoal(null); } catch {}
+        reject(new Error('ran out of time'));
+      }, Math.max(0, deadline - Date.now()));
+    });
+    try {
+      return await Promise.race([api[step.do](...list), overtime]);
+    } finally {
+      clearTimeout(timer);
+    }
   };
 
   const exec = async (list) => {
