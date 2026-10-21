@@ -63,7 +63,9 @@ export class Executor {
   }
 
   setGoal(goal) {
-    this.#stopMotion();
+    // While a reflex (fight/flee) owns the body, don't yank it away mid-combat:
+    // the new goal starts when the reflex finishes.
+    if (!this.reflexRunning) this.#stopMotion();
     if (this.token) this.token.cancelled = true;
     this.goal = goal;
     this.memory.state.goal = goal;
@@ -127,17 +129,76 @@ export class Executor {
 }
 
 // ---------------------------------------------------------------- helpers
+const MOVE_TIMEOUT_MS = 90000;
+const MOVE_STALL_MS = 15000; // no half-block of progress for this long = stuck
+
+// pathfinder.goto never gives up on a goal it keeps almost reaching (e.g. a
+// GoalNear range it can't stand within), which hung whole step lists.
 export async function moveTo(bot, goal, check) {
+  let reason = null;
+  let lastPos = bot.entity.position.clone();
+  let lastMoved = Date.now();
+  const started = Date.now();
+  const watchdog = setInterval(() => {
+    const p = bot.entity.position;
+    if (p.distanceTo(lastPos) > 0.5) { lastPos = p.clone(); lastMoved = Date.now(); }
+    const stalled = Date.now() - lastMoved > MOVE_STALL_MS;
+    if (stalled || Date.now() - started > MOVE_TIMEOUT_MS) {
+      reason = stalled ? `stuck for ${MOVE_STALL_MS / 1000}s` : `took over ${MOVE_TIMEOUT_MS / 1000}s`;
+      bot.pathfinder.setGoal(null); // stop() only takes effect at the next node
+    }
+  }, 1000);
   try {
     await bot.pathfinder.goto(goal);
   } catch (err) {
     check();
-    throw new Error(`could not reach destination: ${err.message}`);
+    throw new Error(`could not reach destination: ${reason ?? err.message}`);
+  } finally {
+    clearInterval(watchdog);
   }
   check();
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Mineflayer fires crafting clicks faster than its own window model catches up
+// with the server on 1.21.11, so it loses track of the cursor stack and puts
+// ingredients in the wrong slots (a pickaxe comes out as nothing). Pausing
+// after each click lets the server's slot updates land first.
+async function slowClicks(bot, fn, ms = 120) {
+  const original = bot.clickWindow;
+  bot.clickWindow = async (...args) => {
+    const out = await original.apply(bot, args);
+    await sleep(ms);
+    return out;
+  };
+  try {
+    return await fn();
+  } finally {
+    bot.clickWindow = original;
+  }
+}
+
+// Walk to the middle of the block we're standing in. The pathfinder stops up
+// to 0.35 off-centre, which leaves our body overlapping a neighbouring cell.
+export async function centerInBlock(bot, check) {
+  const cell = bot.entity.position.floored();
+  const center = new Vec3(cell.x + 0.5, bot.entity.position.y, cell.z + 0.5);
+  try {
+    for (let i = 0; i < 40; i++) {
+      const p = bot.entity.position;
+      if (Math.abs(p.x - center.x) < 0.1 && Math.abs(p.z - center.z) < 0.1) break;
+      await bot.lookAt(center.offset(0, 1.62, 0), true);
+      bot.setControlState('forward', true);
+      bot.setControlState('sneak', true); // slow enough not to overshoot
+      await bot.waitForTicks(1);
+      check();
+    }
+  } finally {
+    bot.setControlState('forward', false);
+    bot.setControlState('sneak', false);
+  }
+}
 
 export function countItem(bot, pred) {
   return bot.inventory.items().filter(pred).reduce((n, i) => n + i.count, 0);
@@ -160,19 +221,24 @@ function findPlayer(bot, name) {
 async function placeFromInventory(bot, itemName, check) {
   const item = bot.inventory.items().find((i) => i.name === itemName);
   if (!item) throw new Error(`no ${itemName} in inventory`);
+  // A bed's head goes one block further in the direction we face, so it needs
+  // two free cells in a straight line; face it squarely from the block centre.
+  const isBed = itemName.endsWith('_bed');
+  if (isBed) await centerInBlock(bot, check);
   const base = bot.entity.position.floored();
-  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [2, 0], [0, 2]]) {
+  const free = (b) => b?.name === 'air' || b?.name === 'cave_air';
+  const standable = (dx, dz) =>
+    bot.blockAt(base.offset(dx, -1, dz))?.boundingBox === 'block' && free(bot.blockAt(base.offset(dx, 0, dz))) && free(bot.blockAt(base.offset(dx, 1, dz)));
+  const offsets = isBed ? [[1, 0], [-1, 0], [0, 1], [0, -1]] : [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [2, 0], [0, 2]];
+  for (const [dx, dz] of offsets) {
+    if (!standable(dx, dz) || (isBed && !standable(2 * dx, 2 * dz))) continue;
     const ground = bot.blockAt(base.offset(dx, -1, dz));
-    const spot = bot.blockAt(base.offset(dx, 0, dz));
-    const above = bot.blockAt(base.offset(dx, 1, dz));
-    if (ground?.boundingBox === 'block' && spot?.name === 'air' && above?.name === 'air') {
-      await bot.equip(item, 'hand');
-      await bot.placeBlock(ground, new Vec3(0, 1, 0));
-      check();
-      return bot.blockAt(spot.position);
-    }
+    await bot.equip(item, 'hand');
+    await bot.placeBlock(ground, new Vec3(0, 1, 0));
+    check();
+    return bot.blockAt(base.offset(dx, 0, dz));
   }
-  throw new Error(`no free spot to place ${itemName}`);
+  throw new Error(`no free spot to place ${itemName}${isBed ? ' (a bed needs 2 clear blocks in a row)' : ''}`);
 }
 
 const KEEP_DEFAULT = /(_sword|_pickaxe|_axe|_shovel|_hoe|_helmet|_chestplate|_leggings|_boots|shield|bow|crossbow|arrow|torch|_bed)$/;
@@ -317,6 +383,18 @@ export const GOALS = {
 
   async collect(bot, { block, count = 1 }, { check }) {
     const ids = matchBlockIds(bot, block);
+    // Without the right tool the block drops nothing, and collectBlock's
+    // pathfinding then grows without bound (took the process out of memory).
+    const held = new Set(bot.inventory.items().map((i) => i.type));
+    const harvestable = ids.filter((id) => {
+      const tools = bot.registry.blocks[id].harvestTools;
+      return !tools || Object.keys(tools).some((t) => held.has(Number(t)));
+    });
+    if (!harvestable.length) {
+      const tools = Object.keys(bot.registry.blocks[ids[0]].harvestTools).map((t) => bot.registry.items[t]?.name);
+      throw new Error(`can't mine ${block} without one of: ${tools.join(', ')}`);
+    }
+    ids.splice(0, ids.length, ...harvestable);
     const dropNames = new Set();
     for (const id of ids) for (const d of bot.registry.blocks[id].drops ?? []) {
       const itemId = typeof d === 'number' ? d : d.drop?.id ?? d.drop;
@@ -354,16 +432,30 @@ export const GOALS = {
       table = bot.findBlock({ matching: tableId, maxDistance: 32 });
       if (!table && countItem(bot, (i) => i.name === 'crafting_table')) table = await placeFromInventory(bot, 'crafting_table', check);
       if (!table) {
-        const anyTableRecipe = bot.recipesAll(target.id, null, true).length;
-        throw new Error(anyTableRecipe ? `${item} needs a crafting table and I don't have one` : `missing ingredients for ${item}`);
+        // recipesAll(.., true) also returns 2x2 recipes, so only blame the table
+        // when nothing fits the inventory grid.
+        const needsTable = !bot.recipesAll(target.id, null, false).length && bot.recipesAll(target.id, null, true).length;
+        throw new Error(needsTable ?`${item} needs a crafting table and I don't have one` : `missing ingredients for ${item}`);
       }
       await moveTo(bot, new goals.GoalNear(table.position.x, table.position.y, table.position.z, 2), check);
       recipe = bot.recipesFor(target.id, null, 1, table)[0];
     }
     if (!recipe) throw new Error(`missing ingredients for ${item}`);
     const times = Math.max(1, Math.ceil(count / recipe.result.count));
-    await bot.craft(recipe, times, table ?? undefined);
-    return `crafted ${times * recipe.result.count} ${item}`;
+    // bot.craft(recipe, n > 1) misplaces items on 1.21.11 (4 logs -> 1 oak_button),
+    // so craft one at a time and let the inventory settle in between.
+    const before = countItem(bot, (i) => i.name === item);
+    for (let i = 0; i < times; i++) {
+      check();
+      const r = i === 0 ? recipe : bot.recipesFor(target.id, null, 1, table)[0];
+      if (!r) break;
+      await slowClicks(bot, () => bot.craft(r, 1, table ?? undefined));
+      await sleep(250);
+    }
+    // bot.craft doesn't notice when the server produced nothing, so count.
+    const made = countItem(bot, (i) => i.name === item) - before;
+    if (made <= 0) throw new Error(`crafting ${item} produced nothing (ingredients may have been misplaced; try again)`);
+    return `crafted ${made} ${item}${made < count ? ' (ran out of ingredients)' : ''}`;
   },
 
   async attack(bot, { target }, { check }) {
@@ -532,13 +624,22 @@ export const GOALS = {
     return `placed ${placed} of ${blocks.length} blocks at ${base}` + (failures.length ? ` (${failures.length} failed, e.g. ${failures[0]})` : '');
   },
 
-  async shelter(bot, { block }, { check, memory }) {
-    const material = pickBuildBlock(bot, block);
-    if (!material) throw new Error(block ? `I have no ${block}` : 'no building blocks (dirt, cobblestone or planks)');
+  async shelter(bot, g, { check, memory }) {
+    const material = pickBuildBlock(bot, g.block);
+    if (!material) throw new Error(g.block ? `I have no ${g.block}` : 'no building blocks (dirt, cobblestone or planks)');
     const have = countItem(bot, (i) => i.name === material);
-    const base = bot.entity.position.floored();
+    // A reflex (fleeing, eating) can interrupt the build and restart this goal.
+    // Remember the site so we go back and finish it instead of starting over.
+    if (!g.site) {
+      if (have < 9) throw new Error(`need at least 9 ${material} for a shelter, have ${have}`);
+      const p = bot.entity.position.floored();
+      g.site = { x: p.x, y: p.y, z: p.z, hut: have >= 50 };
+    }
+    const base = new Vec3(g.site.x, g.site.y, g.site.z);
+    if (!bot.entity.position.floored().equals(base)) await moveTo(bot, new goals.GoalBlock(base.x, base.y, base.z), check);
+    await centerInBlock(bot, check);
     const blocks = [];
-    if (have >= 50) {
+    if (g.site.hut) {
       // Sealed 5x5 hut: 3x3 inside, walls 2 high, flat roof. The pathfinder
       // digs a way out when the next goal needs one.
       for (let dy = 0; dy < 2; dy++) {
@@ -547,16 +648,17 @@ export const GOALS = {
         }
       }
       for (let dx = -2; dx <= 2; dx++) for (let dz = -2; dz <= 2; dz++) blocks.push([dx, 2, dz, material]);
-    } else if (have >= 9) {
+    } else {
       // Emergency pod: walls at feet and head height, plus a roof.
       for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) blocks.push([dx, 0, dz, material], [dx, 1, dz, material]);
       blocks.push([0, 2, 0, material]);
-    } else {
-      throw new Error(`need at least 9 ${material} for a shelter, have ${have}`);
     }
+    const missing = blocks.filter(([dx, dy, dz]) => isAirLike(bot.blockAt(base.offset(dx, dy, dz)))).length;
+    if (missing > have) throw new Error(`need ${missing} ${material} to finish the shelter, have ${have}`);
     const { placed, failures } = await buildBlueprint(bot, base, blocks, check, material);
-    memory.saveLocation('shelter', base, bot.game.dimension, `${have >= 50 ? '5x5 hut' : '1x1 pod'} of ${material}`);
-    return `built a ${have >= 50 ? 'hut' : 'pod'} with ${placed} ${material}` + (failures.length ? ` (${failures.length} spots failed)` : '');
+    const kind = g.site.hut ? 'hut' : 'pod';
+    memory.saveLocation('shelter', base, bot.game.dimension, `${g.site.hut ? '5x5 hut' : '1x1 pod'} of ${material}`);
+    return `built a ${kind} with ${placed} ${material}` + (failures.length ? ` (${failures.length} spots failed)` : '');
   },
 };
 

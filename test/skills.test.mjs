@@ -93,6 +93,11 @@ assert.equal(await runSteps([
   { repeat: '$args.times', steps: [{ set: 'n', value: { add: ['$n', '$i'] } }] },
   { return: '$n' },
 ], { times: 4 }, ctx), '6');
+// add joins two lists (the brain uses it to merge findBlocks results)
+assert.equal(await runSteps([
+  { set: 'all', value: { add: [[{ x: 1 }], [{ x: 2 }, { x: 3 }]] } },
+  { return: { len: '$all' } },
+], {}, ctx), '3');
 
 // --- runaway loops are stopped by the deadline
 await assert.rejects(runSteps([{ while: true, max: 1e9, steps: [{ do: 'wait', args: { seconds: 0.2 } }] }], {}, { ...ctx, timeoutS: 1 }), /ran out of time/);

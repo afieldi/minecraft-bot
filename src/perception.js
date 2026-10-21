@@ -17,10 +17,14 @@ export function isHostile(entity) {
   return entity.type === 'hostile' || HOSTILE.has(entity.name);
 }
 
+// Mobs more than this far above or below are usually in a cave under us or on
+// a cliff: not an immediate threat, and fleeing from them just loops.
+const MAX_THREAT_DY = 5;
+
 export function hostilesNear(bot, maxDist = 16) {
   const me = bot.entity.position;
   return Object.values(bot.entities)
-    .filter((e) => e !== bot.entity && isHostile(e) && e.position.distanceTo(me) <= maxDist)
+    .filter((e) => e !== bot.entity && isHostile(e) && e.position.distanceTo(me) <= maxDist && Math.abs(e.position.y - me.y) <= MAX_THREAT_DY)
     .map((e) => ({ name: e.name, distance: Math.round(e.position.distanceTo(me) * 10) / 10, entity: e }))
     .sort((a, b) => a.distance - b.distance);
 }
