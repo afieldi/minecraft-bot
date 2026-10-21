@@ -522,8 +522,17 @@ export const GOALS = {
     try {
       const fuelItem = fuels[0];
       const fuelNeeded = Math.min(fuelItem.count, Math.ceil(count / fuelValue(fuelItem.name)));
-      if (!furnace.fuelItem()) await furnace.putFuel(fuelItem.type, null, fuelNeeded);
-      await furnace.putInput(bot.registry.itemsByName[input].id, null, count);
+      // Same window-model race as crafting: slow the clicks, and retry once if
+      // mineflayer momentarily can't see an item we do have.
+      const put = async (fn) => {
+        try { await slowClicks(bot, fn); } catch (err) {
+          if (!/Can't find/.test(err.message)) throw err;
+          await sleep(500);
+          await slowClicks(bot, fn);
+        }
+      };
+      if (!furnace.fuelItem()) await put(() => furnace.putFuel(fuelItem.type, null, fuelNeeded));
+      await put(() => furnace.putInput(bot.registry.itemsByName[input].id, null, count));
       let collected = 0;
       const deadline = Date.now() + count * 11000 + 15000;
       while (collected < count && Date.now() < deadline) {
