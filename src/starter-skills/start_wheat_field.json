@@ -1,0 +1,34 @@
+{
+  "description": "Walk to water within 16 blocks, till the grass and dirt around it with a hoe and plant wheat seeds. Needs wheat_seeds; crafts a wooden hoe if none is held. Returns how many were planted.",
+  "steps": [
+    {"if": {"lt": [{"inv": "wheat_seeds"}, 1]}, "then": [{"fail": "I need wheat_seeds first (break tall grass to find them)"}]},
+    {"set": "hoe", "value": null},
+    {"forEach": ["wooden_hoe", "stone_hoe", "iron_hoe", "diamond_hoe", "netherite_hoe"], "as": "h", "steps": [
+      {"if": {"gt": [{"inv": "$h"}, 0]}, "then": [{"set": "hoe", "value": "$h"}]}
+    ]},
+    {"if": {"eq": ["$hoe", null]}, "then": [
+      {"do": "craft", "args": {"item": "wooden_hoe", "count": 1}},
+      {"set": "hoe", "value": "wooden_hoe"}
+    ]},
+    {"do": "findBlocks", "args": {"name": "water", "maxDistance": 16, "count": 1}, "as": "water"},
+    {"if": {"eq": [{"len": "$water"}, 0]}, "then": [{"fail": "no water within 16 blocks; crops need water within 4 blocks"}]},
+    {"do": "moveTo", "args": {"pos": {"first": "$water"}, "range": 2}},
+    {"set": "planted", "value": 0},
+    {"forEach": ["grass_block", "dirt"], "as": "kind", "steps": [
+      {"do": "findBlocks", "args": {"name": "$kind", "maxDistance": 4, "count": 16}, "as": "soil"},
+      {"forEach": "$soil", "as": "p", "steps": [
+        {"do": "blockAt", "args": {"pos": {"offset": ["$p", 0, 1, 0]}}, "as": "above"},
+        {"if": {"and": [{"eq": ["$above.name", "air"]}, {"gt": [{"inv": "wheat_seeds"}, 0]}]}, "then": [
+          {"try": [
+            {"do": "useOn", "args": {"item": "$hoe", "pos": "$p"}, "as": "tilled"},
+            {"if": {"eq": ["$tilled.name", "farmland"]}, "then": [
+              {"do": "plant", "args": {"item": "wheat_seeds", "pos": "$p"}},
+              {"set": "planted", "value": {"add": ["$planted", 1]}}
+            ]}
+          ], "catch": [{"log": "$error"}]}
+        ]}
+      ]}
+    ]},
+    {"return": {"add": ["planted ", "$planted"]}}
+  ]
+}

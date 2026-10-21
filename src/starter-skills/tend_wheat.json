@@ -1,0 +1,20 @@
+{
+  "description": "Harvest ripe wheat within 24 blocks, replant the seeds and pick up the drops. Returns how many were harvested.",
+  "steps": [
+    {"do": "findBlocks", "args": {"name": "wheat", "maxDistance": 24, "count": 64}, "as": "crops"},
+    {"set": "done", "value": 0},
+    {"forEach": "$crops", "as": "p", "steps": [
+      {"do": "blockAt", "args": {"pos": "$p"}, "as": "b"},
+      {"if": {"eq": ["$b.properties.age", 7]}, "then": [
+        {"try": [
+          {"do": "dig", "args": {"pos": "$p"}},
+          {"do": "collectDrops", "args": {"maxDistance": 3}},
+          {"do": "plant", "args": {"item": "wheat_seeds", "pos": {"offset": ["$p", 0, -1, 0]}}},
+          {"set": "done", "value": {"add": ["$done", 1]}}
+        ], "catch": [{"log": "$error"}]}
+      ]}
+    ]},
+    {"do": "collectDrops", "args": {"maxDistance": 10}},
+    {"return": {"add": ["harvested ", "$done"]}}
+  ]
+}
