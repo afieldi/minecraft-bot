@@ -206,7 +206,8 @@ export class Brain {
   async #think(reasons, snapshot) {
     this.busy = true;
     try {
-      const text = `[${new Date().toISOString().slice(11, 19)}] Woken because: ${reasons.join('; ')}\nObservation: ${JSON.stringify(snapshot)}`;
+      const view = typeof snapshot === 'function' ? snapshot() : snapshot;
+      const text = `[${new Date().toISOString().slice(11, 19)}] Woken because: ${reasons.join('; ')}\nObservation: ${JSON.stringify(view)}`;
       if (this.messages.length === 0) {
         this.#appendUser(this.memory.digest(this.players.summary(), this.skills.summary()) + '\n\n' + text);
       } else {
