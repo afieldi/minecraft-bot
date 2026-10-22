@@ -55,6 +55,10 @@ export class Memory {
     this.writeJson('state.json', this.state);
   }
 
+  appendJsonl(name, entry) {
+    fs.appendFileSync(this.#file(name), JSON.stringify(entry) + '\n');
+  }
+
   // ---- journal -----------------------------------------------------------
   log(kind, data = {}) {
     const entry = { t: new Date().toISOString(), kind, ...data };

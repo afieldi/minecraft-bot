@@ -43,6 +43,7 @@ export class Executor {
     this.reflexRunning = false;
     this.lastResult = null;
     this.onGoalFinished = () => {};
+    this.onGoalEnded = () => {}; // every goal end, including replacement (result null)
     this.waiters = [];
   }
 
@@ -69,6 +70,8 @@ export class Executor {
     // While a reflex (fight/flee) owns the body, don't yank it away mid-combat:
     // the new goal starts when the reflex finishes. A new goal also ends any
     // recovery hold, since whoever set it has decided what to do next.
+    // A suspended goal isn't running, so nothing else will report its end.
+    if (this.suspended && this.goal && this.goal !== goal) this.onGoalEnded(this.goal, null);
     this.#clearHold();
     if (!this.reflexRunning) this.#stopMotion();
     if (this.token) this.token.cancelled = true;
@@ -98,7 +101,11 @@ export class Executor {
       .then((message) => ({ ok: true, message }))
       .catch((err) => (err instanceof Cancelled || token.cancelled ? null : { ok: false, message: err.message }))
       .then((result) => {
-        if (!result || token.cancelled || this.goal !== goal) return;
+        // Replaced by another goal: it's over. Cancelled but still the goal:
+        // only suspended by a reflex, and it will run again.
+        if (this.goal !== goal) { this.onGoalEnded(goal, null); return; }
+        if (!result || token.cancelled) return;
+        this.onGoalEnded(goal, result);
         this.lastResult = { goal: this.describe(), ...result };
         this.memory.log(result.ok ? 'goal_done' : 'goal_failed', { goal, text: result.message });
         this.goal = null;

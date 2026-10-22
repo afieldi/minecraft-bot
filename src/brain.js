@@ -7,7 +7,7 @@
 // writes a handoff note to disk and a fresh instance starts from the memory
 // files alone.
 import { GOAL_TYPES } from './actions.js';
-import { inventorySummary } from './perception.js';
+import { inventorySummary, briefState } from './perception.js';
 import { SKILL_DOCS } from './skills.js';
 
 const SYSTEM = `You are the mind of a Minecraft player bot on a multiplayer survival server. You see the world through text observations and act through tools. A fast reflex layer handles combat, fleeing and eating on its own; you decide what the bot is trying to achieve and how it treats other people.
@@ -60,6 +60,7 @@ const TOOLS = [
         type: { type: 'string', enum: Object.keys(GOAL_TYPES) },
         args: { type: 'object', description: 'Arguments for the goal type, as listed in the system prompt.' },
         reason: { type: 'string' },
+        lessons: { type: 'array', items: { type: 'integer' }, description: 'Ids (#n) of remembered lessons this goal follows, if any. They are scored by how the goal turns out.' },
       },
       required: ['type', 'args'],
     },
@@ -181,8 +182,9 @@ const OPENAI_TOOLS = TOOLS.map((t) => ({
 }));
 
 export class Brain {
-  constructor({ bot, memory, players, executor, skills, config, log }) {
+  constructor({ bot, memory, players, executor, skills, experience, config, log }) {
     this.bot = bot;
+    this.experience = experience;
     this.skills = skills;
     this.memory = memory;
     this.players = players;
@@ -282,6 +284,7 @@ export class Brain {
         model: this.cfg.model,
         max_tokens: 16000,
         reasoning: { effort: this.cfg.effort },
+        usage: { include: true },
         tools: OPENAI_TOOLS,
         messages: [{ role: 'system', content: [{ type: 'text', text: SYSTEM, ...cache }] }, ...messages],
       }),
@@ -292,6 +295,9 @@ export class Brain {
     if (body.error) throw new Error(`OpenRouter: ${body.error.message ?? JSON.stringify(body.error)}`);
     const u = body.usage ?? {};
     this.contextTokens = (u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0);
+    this.experience?.count('brainCalls');
+    this.experience?.count('brainTokens', this.contextTokens);
+    if (typeof u.cost === 'number') this.experience?.count('brainCostUsd', u.cost);
     return body.choices[0];
   }
 
@@ -335,6 +341,7 @@ export class Brain {
     switch (name) {
       case 'set_goal': {
         const goal = { type: input.type, ...(input.args ?? {}) };
+        this.#track(goal, input.reason, input.lessons);
         executor.setGoal(goal);
         memory.log('goal_set', { goal, text: input.reason });
         return `goal set: ${executor.describe()}`;
@@ -383,6 +390,7 @@ export class Brain {
         return 'unknown inspect target';
       case 'run_steps': {
         const goal = { type: 'steps', steps: input.steps, args: input.args, timeoutSeconds: input.timeout_seconds };
+        this.#track(goal, 'run_steps');
         executor.setGoal(goal);
         memory.log('goal_set', { goal: { type: 'steps', count: input.steps?.length } });
         const wait = Math.min(input.wait_seconds ?? 30, 60) * 1000;
@@ -407,6 +415,17 @@ export class Brain {
       default:
         throw new Error(`unknown tool ${name}`);
     }
+  }
+
+  // File the goal with the experience recorder so its outcome is scored
+  // against the brain (or the skill it runs) and any lessons it cites.
+  #track(goal, reason, lessons = []) {
+    this.experience?.goalStarted(goal, {
+      source: goal.type === 'skill' ? `skill:${goal.name}` : 'brain',
+      reason,
+      cites: (lessons ?? []).map((id) => `lesson:${id}`),
+      state: briefState(this.bot),
+    });
   }
 
   // End this instance and start a fresh one that only has the memory files.

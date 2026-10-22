@@ -76,6 +76,17 @@ function timeLabel(t) {
   return 'dawn';
 }
 
+// A few numbers to file with each decision, so its outcome can be read later.
+export function briefState(bot) {
+  return {
+    health: Math.round(bot.health * 10) / 10,
+    food: bot.food,
+    air: bot.oxygenLevel,
+    timeOfDay: bot.time?.timeOfDay,
+    hostiles: hostilesNear(bot, 16).slice(0, 3).map(({ name, distance }) => ({ name, distance })),
+  };
+}
+
 // Small, fast snapshot for the reflex/decision layer.
 export function reflexState(bot, players, executor) {
   const hostiles = hostilesNear(bot);
