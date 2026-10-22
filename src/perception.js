@@ -77,10 +77,29 @@ function timeLabel(t) {
 }
 
 // Air supply 0-20. The server counts air down below zero while drowning (to
-// -20 ticks before each hit), which Mineflayer reports as -1; that is "no air
-// left", not a different state.
+// -20 ticks before each hit), which reads as -1; that is "no air left", not a
+// different state.
 export function airLevel(bot) {
-  return Math.max(0, bot.oxygenLevel ?? 20);
+  return Math.max(0, Math.min(20, bot.oxygenLevel ?? 20));
+}
+
+// Mineflayer sets bot.oxygenLevel from every entity's air metadata, not just
+// ours, so a drowning zombie or a dolphin (air 320) overwrote it. Keep our own
+// value and put it back after each metadata packet (our listener runs after
+// Mineflayer's).
+export function trackOwnAir(bot) {
+  let air = 20;
+  const keys = bot.registry.entitiesByName.player?.metadataKeys;
+  bot._client.on('entity_metadata', (packet) => {
+    if (packet.entityId === bot.entity?.id) {
+      for (const m of packet.metadata) {
+        if (keys ? keys[m.key] === 'air_supply' : m.key === 1) air = Math.round(m.value / 15);
+      }
+    }
+    bot.oxygenLevel = air;
+  });
+  bot.on('respawn', () => { air = 20; bot.oxygenLevel = 20; });
+  bot.oxygenLevel = air;
 }
 
 // A few numbers to file with each decision, so its outcome can be read later.

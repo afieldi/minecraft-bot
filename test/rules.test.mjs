@@ -2,11 +2,13 @@
 // hard-coded survival checks, the brain's rules are validated, and broken
 // rules switch themselves off.
 import fs from 'node:fs';
+import { EventEmitter } from 'node:events';
 import assert from 'node:assert/strict';
 import { Memory } from '../src/memory.js';
 import { RuleBook } from '../src/rules.js';
 import { Arbiter } from '../src/arbiter.js';
 import { evaluate } from '../src/skills.js';
+import { trackOwnAir } from '../src/perception.js';
 
 const dir = '/tmp/claude-0/mcrulestest';
 fs.rmSync(dir, { recursive: true, force: true });
@@ -26,6 +28,8 @@ assert.equal(evaluate({ count: ['$hostiles', { lt: ['$it.distance', 5] }] }, st(
 assert.deepEqual(evaluate({ where: ['$hostiles', { eq: ['$it.name', 'zombie'] }] }, st({ hostiles: [zombie, skeleton] })), [zombie]);
 assert.equal(evaluate({ all: [[], false] }, base), true);
 assert.equal(evaluate({ in: ['dusk', ['dusk', 'night']] }, base), true);
+// len only measures lists (the brain applied it to a number and the rule never fired).
+assert.throws(() => evaluate({ len: '$health' }, base), /"len" needs a list/);
 // A malformed comparison says what is wrong (the brain wrote this one).
 assert.throws(() => evaluate({ filter: ['$hostiles', 'y', { gte: 71 }] }, base), /"gte" takes a list of two values/);
 
@@ -55,6 +59,10 @@ assert.equal(pick({ inWater: true, air: 5, health: 6, hostiles: [zombie] }), 'ru
 assert.throws(() => book.save({ id: 'Bad Id', when: true, do: 'flee' }), /lowercase/);
 assert.throws(() => book.save({ id: 'x1', when: true, do: 'dance' }), /must be one of/);
 assert.throws(() => book.save({ id: 'x1', when: { offset: ['$nothing', 0, 0, 0] }, do: 'flee' }, base), /current situation/);
+// A condition sent as JSON text is parsed; other text is refused (it would always be true).
+assert.deepEqual(book.save({ id: 'as_text', when: '{"lt": ["$health", 5]}', do: 'flee' }, base).when, { lt: ['$health', 5] });
+assert.throws(() => book.save({ id: 'as_words', when: 'when low on health', do: 'flee' }, base), /condition object/);
+book.delete('as_text');
 const r = book.save({ id: 'flee_creeper', description: 'run', when: { any: ['$hostiles', { and: [{ eq: ['$it.name', 'creeper'] }, { lt: ['$it.distance', 5] }] }] }, do: 'flee', priority: 95 }, base);
 assert.equal(r.version, 1);
 assert.equal(pick({ hostiles: [{ name: 'creeper', distance: 3 }] }), 'rule:flee_creeper');
@@ -74,4 +82,16 @@ assert.equal(book.get('broken').enabled, false);
 assert.ok(logs.some((l) => /broken disabled/.test(l)));
 assert.match(book.summary(), /broken .*DISABLED/);
 
+// Only our own air metadata counts; Mineflayer also applies other entities'.
+{
+  const fake = new EventEmitter();
+  fake._client = new EventEmitter();
+  fake.entity = { id: 7 };
+  fake.registry = { entitiesByName: { player: { metadataKeys: ['shared_flags', 'air_supply'] } } };
+  trackOwnAir(fake);
+  fake._client.emit('entity_metadata', { entityId: 99, metadata: [{ key: 1, value: 4800 }] });
+  assert.equal(fake.oxygenLevel, 20, 'a dolphin does not set our air');
+  fake._client.emit('entity_metadata', { entityId: 7, metadata: [{ key: 1, value: 135 }] });
+  assert.equal(fake.oxygenLevel, 9);
+}
 console.log('rules.test: all assertions passed');

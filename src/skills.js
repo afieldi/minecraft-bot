@@ -230,7 +230,12 @@ export function evaluate(e, vars) {
       }
       case 'add': { const [x, y] = two(); return Array.isArray(x) && Array.isArray(y) ? [...x, ...y] : x + y; }
       case 'sub': { const [x, y] = two(); return x - y; }
-      case 'len': return a()?.length ?? 0;
+      case 'len': {
+        const v = a();
+        if (v === null || v === undefined) return 0;
+        if (!Array.isArray(v) && typeof v !== 'string') throw new Error(`"len" needs a list, but ${JSON.stringify(e[op])} is ${JSON.stringify(v)}`);
+        return v.length;
+      }
       case 'first': return a()?.[0] ?? null;
       case 'inv': return vars.__inv(a());
       case 'filter': {
