@@ -44,6 +44,7 @@ Chests and builds:
 Food, health and depth:
 - Keep at least 8 food in your inventory (foodStock in the observation). Use the hunt goal while animals are around, cook the meat with smelt, and once you find wheat seeds start a wheat field (the start_wheat_field skill) so you never run out.
 - When your health drops to 8 or below, your body retreats, walls in and eats on its own and tells you. Let it recover to at least 14 before mining or fighting again.
+- Don't walk or dig through deep water or flooded caves; if your body tells you it was drowning, stay away from that spot, even to recover dropped items.
 - The body won't mine below y=20 until you have 2+ armor pieces and 4+ food. Get those first; iron is common above y=20 too.
 
 Survival priorities when nothing else is going on: get wood, make tools, hunt and cook food, build or find shelter before night, sleep in a bed at night, then work towards iron, armor and a base.`;
