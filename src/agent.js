@@ -21,6 +21,7 @@ const THREAT_ALERT = 0.75;
 const MIN_REFLEX_CONFIDENCE = 0.3;
 // Below this the body retreats on its own; the brain is too slow to react in time.
 const LOW_HEALTH = 8;
+const LOW_AIR = 14; // of 20 bubbles; digging out of a flooded pit takes a while
 const RETREAT_COOLDOWN_MS = 20000;
 // Pathfinding inside collectBlock can run away (e.g. a tool breaks mid-goal)
 // and take the process out of memory; abort the goal well before that.
@@ -73,6 +74,9 @@ export class Agent {
     this.#watchSnapbacks();
     const movements = new Movements(bot);
     movements.allowSprinting = true;
+    // Swimming through water got the bot trapped and drowned in flooded caves;
+    // only path through it when there's no reasonable dry route.
+    movements.liquidCost = 20;
     // Don't tunnel through things other players build while walking or mining.
     for (const b of Object.values(bot.registry.blocksByName)) {
       if (PLAYER_MADE.test(b.name)) movements.blocksCantBreak.add(b.id);
@@ -197,6 +201,16 @@ export class Agent {
     this.ticking = true;
     try {
       this.players.update();
+      if (this.bot.oxygenLevel !== undefined && this.bot.oxygenLevel <= LOW_AIR && this.bot.entity.isInWater && !this.executor.reflexRunning) {
+        this.log(`reflex: surface (air ${this.bot.oxygenLevel}/20)`);
+        this.executor.reflex('surface', {});
+        this.executor.setGoal({ type: 'idle', seconds: 10 });
+        if (Date.now() - (this.lastAirWake ?? 0) > 30000) {
+          this.lastAirWake = Date.now();
+          this.wake(`you were drowning (air ${this.bot.oxygenLevel}/20); your body swam for air. Don't go back through that water, even for dropped items`);
+        }
+        return;
+      }
       // Only take over when retreating helps: something is near, or there's food
       // to eat. Low health with neither means the brain needs to go hunt.
       const canHelp = hostilesNear(this.bot, 12).length > 0 || (this.bot.food < 20 && foodItems(this.bot).length > 0);

@@ -456,9 +456,13 @@ export const GOALS = {
       const want = Math.min(4, count - (have() - start));
       const found = bot.findBlocks({ matching: ids, maxDistance: 64, count: want * 8 });
       const shallowOnly = /overworld/.test(bot.game.dimension) && !readyForDepth(bot);
-      const positions = (shallowOnly ? found.filter((p) => p.y >= DEEP_Y) : found).slice(0, want);
+      // Skip blocks touching water: digging them floods the tunnel, which is
+      // how the bot ended up drowning in caves.
+      const wet = (p) => [[0, 1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]].some((d) => bot.blockAt(p.offset(...d))?.name === 'water');
+      const positions = found.filter((p) => !(shallowOnly && p.y < DEEP_Y) && !wet(p)).slice(0, want);
       if (!positions.length) {
         if (round > 0) break;
+        if (found.length && found.every(wet)) throw new Error(`every ${block} nearby is next to water; digging it would flood the tunnel`);
         if (found.length) throw new Error(`the nearest ${block} is below y=${DEEP_Y}; only go that deep with ${DEPTH_MIN_ARMOR}+ armor pieces and ${DEPTH_MIN_FOOD}+ food`);
         throw new Error(`no ${block} within 64 blocks; try exploring first`);
       }
@@ -792,6 +796,40 @@ export const REFLEXES = {
     foods.sort((a, b) => (registry[b.name]?.foodPoints ?? 0) - (registry[a.name]?.foodPoints ?? 0));
     await bot.equip(foods[0], 'hand');
     await bot.consume();
+  },
+
+  // Out of air (it drowned 4 times in one flooded pit going back for its
+  // drops). The pathfinder can't plan underwater (it reports arrival without
+  // moving), so: if open water leads up to air, swim straight up; otherwise
+  // dig the ceiling out standing on the bottom (digging while floating is 5x
+  // slower again and we drowned mid-dig), then swim up through the hole.
+  async surface(bot) {
+    const air = (b) => b && (b.name === 'air' || b.name === 'cave_air');
+    const passable = (b) => air(b) || b?.name === 'water';
+    const deadline = Date.now() + 15000;
+    try {
+      while (Date.now() < deadline && bot.oxygenLevel < 18) {
+        const head = bot.entity.position.offset(0, 1.62, 0).floored();
+        let blocker = null;
+        for (let dy = 1; dy <= 4; dy++) {
+          const b = bot.blockAt(head.offset(0, dy, 0));
+          if (air(b)) break;
+          if (!passable(b)) { blocker = b; break; }
+        }
+        if (!blocker || !bot.canDigBlock(blocker)) {
+          bot.setControlState('jump', true);
+          await sleep(250);
+          continue;
+        }
+        bot.setControlState('jump', false);
+        for (let i = 0; i < 8 && !bot.entity.onGround; i++) await sleep(125);
+        const tool = bot.pathfinder.bestHarvestTool(blocker);
+        if (tool) await bot.equip(tool, 'hand').catch(() => {});
+        await bot.dig(blocker).catch(() => {});
+      }
+    } finally {
+      bot.setControlState('jump', false);
+    }
   },
 
   // Forced by the body at low health, ahead of Jev and the brain. Fleeing

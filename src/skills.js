@@ -216,7 +216,11 @@ function evaluate(e, vars) {
     const [op] = keys;
     const a = () => evaluate(e[op], vars);
     switch (op) {
-      case 'offset': { const [p, dx, dy, dz] = a(); return { x: p.x + dx, y: p.y + dy, z: p.z + dz }; }
+      case 'offset': {
+        const [p, dx, dy, dz] = a();
+        if (!p || typeof p.x !== 'number') throw new Error(`offset needs a position {x, y, z} first, got ${JSON.stringify(e[op]?.[0])} = ${JSON.stringify(p)}`);
+        return { x: p.x + dx, y: p.y + dy, z: p.z + dz };
+      }
       case 'add': { const [x, y] = a(); return Array.isArray(x) && Array.isArray(y) ? [...x, ...y] : x + y; }
       case 'sub': { const [x, y] = a(); return x - y; }
       case 'len': return a()?.length ?? 0;
