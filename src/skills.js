@@ -225,14 +225,20 @@ export function evaluate(e, vars) {
   if (keys.length === 1) {
     const [op] = keys;
     const a = () => evaluate(e[op], vars);
+    // Two-operand operators: say what was wrong instead of failing to destructure.
+    const two = () => {
+      const v = a();
+      if (!Array.isArray(v) || v.length !== 2) throw new Error(`"${op}" takes a list of two values, e.g. {"${op}": ["$x", 3]}; got ${JSON.stringify(e[op])}`);
+      return v;
+    };
     switch (op) {
       case 'offset': {
         const [p, dx, dy, dz] = a();
         if (!p || typeof p.x !== 'number') throw new Error(`offset needs a position {x, y, z} first, got ${JSON.stringify(e[op]?.[0])} = ${JSON.stringify(p)}`);
         return { x: p.x + dx, y: p.y + dy, z: p.z + dz };
       }
-      case 'add': { const [x, y] = a(); return Array.isArray(x) && Array.isArray(y) ? [...x, ...y] : x + y; }
-      case 'sub': { const [x, y] = a(); return x - y; }
+      case 'add': { const [x, y] = two(); return Array.isArray(x) && Array.isArray(y) ? [...x, ...y] : x + y; }
+      case 'sub': { const [x, y] = two(); return x - y; }
       case 'len': return a()?.length ?? 0;
       case 'first': return a()?.[0] ?? null;
       case 'inv': return vars.__inv(a());
@@ -240,12 +246,12 @@ export function evaluate(e, vars) {
         const [list, field, value] = a();
         return (list ?? []).filter((it) => lookup('$x.' + field, { x: it }) === value);
       }
-      case 'eq': { const [x, y] = a(); return x === y; }
-      case 'ne': { const [x, y] = a(); return x !== y; }
-      case 'gt': { const [x, y] = a(); return x > y; }
-      case 'gte': { const [x, y] = a(); return x >= y; }
-      case 'lt': { const [x, y] = a(); return x < y; }
-      case 'lte': { const [x, y] = a(); return x <= y; }
+      case 'eq': { const [x, y] = two(); return x === y; }
+      case 'ne': { const [x, y] = two(); return x !== y; }
+      case 'gt': { const [x, y] = two(); return x > y; }
+      case 'gte': { const [x, y] = two(); return x >= y; }
+      case 'lt': { const [x, y] = two(); return x < y; }
+      case 'lte': { const [x, y] = two(); return x <= y; }
       case 'not': return !a();
       // List tests: the condition is evaluated per item with the item in $it.
       case 'any': case 'all': case 'count': case 'where': {

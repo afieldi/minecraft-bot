@@ -76,12 +76,19 @@ function timeLabel(t) {
   return 'dawn';
 }
 
+// Air supply 0-20. The server counts air down below zero while drowning (to
+// -20 ticks before each hit), which Mineflayer reports as -1; that is "no air
+// left", not a different state.
+export function airLevel(bot) {
+  return Math.max(0, bot.oxygenLevel ?? 20);
+}
+
 // A few numbers to file with each decision, so its outcome can be read later.
 export function briefState(bot) {
   return {
     health: Math.round(bot.health * 10) / 10,
     food: bot.food,
-    air: bot.oxygenLevel,
+    air: airLevel(bot),
     timeOfDay: bot.time?.timeOfDay,
     hostiles: hostilesNear(bot, 16).slice(0, 3).map(({ name, distance }) => ({ name, distance })),
   };
@@ -97,7 +104,7 @@ export function ruleState(bot, players, executor) {
   return {
     health: bot.health,
     food: bot.food,
-    air: bot.oxygenLevel ?? 20,
+    air: airLevel(bot),
     inWater: !!bot.entity.isInWater,
     y: Math.floor(bot.entity.position.y),
     timeOfDay: bot.time.timeOfDay,
