@@ -87,6 +87,38 @@ export function briefState(bot) {
   };
 }
 
+const BUILD_BLOCK_RE = /^(cobblestone|cobbled_deepslate|dirt|stone|andesite|diorite|granite|netherrack|sandstone)$/;
+
+// Everything a learned reflex rule can test, recomputed every tick. These are
+// facts, not judgements: rules decide what matters.
+export function ruleState(bot, players, executor) {
+  const near = players.nearby(16);
+  const hurtAt = players.lastHurtAt ?? 0;
+  return {
+    health: bot.health,
+    food: bot.food,
+    air: bot.oxygenLevel ?? 20,
+    inWater: !!bot.entity.isInWater,
+    y: Math.floor(bot.entity.position.y),
+    timeOfDay: bot.time.timeOfDay,
+    time: timeLabel(bot.time.timeOfDay),
+    raining: !!bot.isRaining,
+    hurtSecondsAgo: hurtAt ? (Date.now() - hurtAt) / 1000 : 9999,
+    hostiles: hostilesNear(bot, 16).map(({ name, distance, entity }) => ({
+      name, distance, ranged: isRanged(entity), dy: Math.round(entity.position.y - bot.entity.position.y),
+    })),
+    players: near.map(({ entity, ...rest }) => rest),
+    attackers: near.filter((p) => p.attackedMeRecently).map((p) => p.name),
+    weapon: bestWeapon(bot)?.name ?? null,
+    hasShield: hasShield(bot),
+    armorPieces: armorPieces(bot),
+    foodCount: foodStock(bot),
+    canEat: foodItems(bot).length > 0,
+    buildBlocks: bot.inventory.items().filter((i) => BUILD_BLOCK_RE.test(i.name)).reduce((n, i) => n + i.count, 0),
+    goal: executor.goal?.type ?? null,
+  };
+}
+
 // Small, fast snapshot for the reflex/decision layer.
 export function reflexState(bot, players, executor) {
   const hostiles = hostilesNear(bot);

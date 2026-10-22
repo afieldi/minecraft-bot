@@ -151,7 +151,7 @@ export class Memory {
   }
 
   // The briefing a fresh brain instance starts with.
-  digest(playerSummary, skillSummary) {
+  digest(playerSummary, skillSummary, ruleSummary) {
     const knowledge = this.knowledge.items
       .slice(-120)
       .map((k) => `- [#${k.id} ${k.category}] ${k.text}`)
@@ -172,6 +172,7 @@ export class Memory {
       `# Chests\n${this.chestSummary() || '(none known)'}`,
       `# People you know\n${playerSummary || '(nobody yet)'}`,
       `# Your saved skills\n${skillSummary || '(none yet)'}`,
+      `# Your reflex rules\n${ruleSummary || '(none yet)'}`,
       `# Recent events\n${journal || '(none)'}`,
     ].join('\n\n');
   }

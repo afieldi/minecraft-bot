@@ -65,7 +65,8 @@ Steps:
 
 Expressions: literals, "$refs", {"x": .., "y": .., "z": ..} objects with exprs inside, and operators:
 {"offset": [pos, dx, dy, dz]}, {"add": [a, b]} (numbers, or joins two lists), {"sub": [a, b]}, {"len": list}, {"first": list}, {"inv": "item"} (count held),
-{"filter": [list, "field.path", value]}, {"eq"|"ne"|"gt"|"gte"|"lt"|"lte": [a, b]}, {"not": c}, {"and": [..]}, {"or": [..]}
+{"filter": [list, "field.path", value]}, {"eq"|"ne"|"gt"|"gte"|"lt"|"lte": [a, b]}, {"not": c}, {"and": [..]}, {"or": [..]}, {"in": [x, list]},
+{"any"|"all"|"count"|"where": [list, cond]} (cond sees each item as "$it", e.g. {"any": ["$hostiles", {"eq": ["$it.name", "creeper"]}]})
 
 Actions (positions are {x,y,z}):
 - position, health, food, timeOfDay (0-24000; night 13000-23000), inventory -> {item: count}
@@ -207,7 +208,7 @@ function lookup(ref, vars) {
   return v;
 }
 
-function evaluate(e, vars) {
+export function evaluate(e, vars) {
   if (typeof e === 'string') return e.startsWith('$') ? lookup(e, vars) : e;
   if (Array.isArray(e)) return e.map((x) => evaluate(x, vars));
   if (!e || typeof e !== 'object') return e;
@@ -237,6 +238,17 @@ function evaluate(e, vars) {
       case 'lt': { const [x, y] = a(); return x < y; }
       case 'lte': { const [x, y] = a(); return x <= y; }
       case 'not': return !a();
+      // List tests: the condition is evaluated per item with the item in $it.
+      case 'any': case 'all': case 'count': case 'where': {
+        const [listExpr, cond] = e[op];
+        const list = evaluate(listExpr, vars) ?? [];
+        const test = (it) => evaluate(cond, { ...vars, it });
+        if (op === 'any') return list.some(test);
+        if (op === 'all') return list.every(test);
+        if (op === 'count') return list.filter(test).length;
+        return list.filter(test);
+      }
+      case 'in': { const [x, list] = a(); return (list ?? []).includes(x); }
       case 'and': return a().every(Boolean);
       case 'or': return a().some(Boolean);
     }

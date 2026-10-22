@@ -12,8 +12,9 @@ import { JevClient } from './jev.js';
 import { Brain } from './brain.js';
 import { Arbiter } from './arbiter.js';
 import { Experience } from './experience.js';
+import { RuleBook } from './rules.js';
 import { SkillLibrary, registerSkillGoals } from './skills.js';
-import { briefState, reflexState, worldSnapshot, hostilesNear, foodItems, isRanged, hasShield, bestWeapon } from './perception.js';
+import { briefState, ruleState, reflexState, worldSnapshot } from './perception.js';
 
 const { pathfinder, Movements } = pathfinderPkg;
 const ESCALATE_COOLDOWN_MS = 20000;
@@ -21,11 +22,8 @@ const THREAT_ALERT = 0.75;
 // Jev sometimes picks flee/fight with very low confidence; acting on those
 // makes the bot abandon its goal over nothing.
 const MIN_REFLEX_CONFIDENCE = 0.3;
-// Below this the body retreats on its own; the brain is too slow to react in time.
-const LOW_HEALTH = 8;
 const DUSK_START = 11500;
 const DUSK_END = 13000;
-const LOW_AIR = 14; // of 20 bubbles; digging out of a flooded pit takes a while
 const BEHAVIOUR_WAKE_COOLDOWN_MS = 30000;
 // Pathfinding inside collectBlock can run away (e.g. a tool breaks mid-goal)
 // and take the process out of memory; abort the goal well before that.
@@ -94,11 +92,12 @@ export class Agent {
     this.reflexes = new Reflexes(bot, this.players, this.jev, log);
     this.skills = new SkillLibrary(this.memory);
     registerSkillGoals(this.skills);
-    this.brain = new Brain({ bot, memory: this.memory, players: this.players, executor: this.executor, skills: this.skills, experience: this.experience, config: this.cfg.brain, log });
+    this.rules = new RuleBook(this.memory, { experience: this.experience, log });
+    this.brain = new Brain({ bot, memory: this.memory, players: this.players, executor: this.executor, skills: this.skills, rules: this.rules, experience: this.experience, config: this.cfg.brain, log });
     this.experience.attach(bot);
     this.executor.onGoalEnded = (goal, result) => this.experience.goalEnded(goal, result);
     this.arbiter = new Arbiter();
-    this.arbiter.addProvider(() => this.#builtinBehaviours());
+    this.arbiter.addProvider(() => this.rules.behaviours());
     this.lastEscalation = 0;
     this.lastWake = 0;
     this.threatAlerted = new Map();
@@ -113,7 +112,6 @@ export class Agent {
     this.executor.onGoalFinished = (r) => this.wake(`goal ${r.ok ? 'finished' : 'failed'}: ${r.message}`);
     this.players.onEvent((ev) => this.#onPlayerEvent(ev));
 
-    bot.on('entityHurt', (e) => { if (e === bot.entity) this.lastHurtAt = Date.now(); });
     bot.on('death', () => {
       this.memory.log('died', { pos: bot.entity.position });
       this.wake('you died and respawned; your inventory was dropped where you died');
@@ -233,7 +231,7 @@ export class Agent {
     try {
       this.players.update();
       if (!this.executor.reflexRunning) {
-        const pick = this.arbiter.choose({});
+        const pick = this.arbiter.choose(ruleState(this.bot, this.players, this.executor));
         if (pick) {
           this.#act(pick);
           return;
@@ -278,64 +276,11 @@ export class Agent {
   #act(pick) {
     this.log(`reflex: ${pick.action} (${pick.source}${pick.reason ? ': ' + pick.reason : ''})`);
     this.experience.record({ source: pick.source, action: pick.action, reason: pick.reason, state: briefState(this.bot) });
-    this.executor.reflex(pick.action, { memory: this.memory, ...(pick.ctx ?? {}) }, { holdSeconds: pick.holdSeconds ?? 0 });
+    this.executor.reflex(pick.action, { memory: this.memory, ...this.#reflexContext({}) }, { holdSeconds: pick.holdSeconds ?? 0 });
     if (pick.wake && Date.now() - (this.behaviourWoke.get(pick.behaviour) ?? 0) > BEHAVIOUR_WAKE_COOLDOWN_MS) {
       this.behaviourWoke.set(pick.behaviour, Date.now());
       this.wake(pick.wake);
     }
-  }
-
-  // Survival checks that run ahead of Jev. These are hand-written strategy and
-  // are meant to be replaced by rules the bot learns.
-  #builtinBehaviours() {
-    const bot = this.bot;
-    return [
-      {
-        name: 'surface',
-        priority: 100,
-        applies: () => {
-          if (bot.oxygenLevel === undefined || bot.oxygenLevel > LOW_AIR || !bot.entity.isInWater) return null;
-          return {
-            action: 'surface',
-            holdSeconds: 10,
-            reason: `air ${bot.oxygenLevel}/20`,
-            wake: `you were drowning (air ${bot.oxygenLevel}/20); your body swam for air. Don't go back through that water, even for dropped items`,
-          };
-        },
-      },
-      {
-        // Being shot: Jev tended to keep "continue_goal" while a skeleton
-        // picked us apart. Engage behind the shield (or while still healthy),
-        // otherwise wall in to break line of sight.
-        name: 'archer',
-        priority: 90,
-        applies: () => {
-          const archer = hostilesNear(bot, 16).find((h) => isRanged(h.entity));
-          if (!archer || Date.now() - (this.lastHurtAt ?? 0) >= 1500) return null;
-          const engage = bestWeapon(bot) && (hasShield(bot) || bot.health > 12);
-          return { action: engage ? 'fight' : 'retreat', reason: `shot by ${archer.name}, health ${bot.health.toFixed(1)}` };
-        },
-      },
-      {
-        // Only take over when retreating helps: something is near, or there's
-        // food to eat. Low health with neither means the brain needs to go hunt.
-        name: 'low_health',
-        priority: 80,
-        cooldownSeconds: 20,
-        applies: () => {
-          if (bot.health > LOW_HEALTH) return null;
-          const canHelp = hostilesNear(bot, 12).length > 0 || (bot.food < 20 && foodItems(bot).length > 0);
-          if (!canHelp) return null;
-          return {
-            action: 'retreat',
-            // Don't resume whatever got us hurt straight away.
-            holdSeconds: 30,
-            reason: `health ${bot.health.toFixed(1)}`,
-            wake: `your health is low (${bot.health.toFixed(1)}/20); your body is retreating, walling in and eating. Recover before doing anything risky`,
-          };
-        },
-      },
-    ];
   }
 
   #reflexContext(d) {

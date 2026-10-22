@@ -1,0 +1,11 @@
+{
+  "id": "archer_retreat",
+  "description": "Being shot by an archer without the means to fight it: retreat and wall in to break line of sight",
+  "when": {"and": [
+    {"lt": ["$hurtSecondsAgo", 1.5]},
+    {"any": ["$hostiles", "$it.ranged"]},
+    {"not": {"and": [{"ne": ["$weapon", null]}, {"or": ["$hasShield", {"gt": ["$health", 12]}]}]}}
+  ]},
+  "do": "retreat",
+  "priority": 89
+}

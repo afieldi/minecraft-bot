@@ -1,0 +1,9 @@
+{
+  "id": "surface",
+  "description": "Low on air in water: swim or dig up for air, then wait before going back",
+  "when": {"and": ["$inWater", {"lte": ["$air", 14]}]},
+  "do": "surface",
+  "priority": 100,
+  "holdSeconds": 10,
+  "tell": "you were drowning; your body swam for air. Think about whether to avoid that water"
+}

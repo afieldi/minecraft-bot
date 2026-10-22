@@ -1,0 +1,16 @@
+{
+  "id": "low_health",
+  "description": "Health 8 or less with a mob near or food to eat: retreat, wall in, eat, and recover before resuming",
+  "when": {"and": [
+    {"lte": ["$health", 8]},
+    {"or": [
+      {"any": ["$hostiles", {"lte": ["$it.distance", 12]}]},
+      {"and": [{"lt": ["$food", 20]}, "$canEat"]}
+    ]}
+  ]},
+  "do": "retreat",
+  "priority": 80,
+  "holdSeconds": 30,
+  "cooldownSeconds": 20,
+  "tell": "your health is low; your body is retreating, walling in and eating. Recover before doing anything risky"
+}

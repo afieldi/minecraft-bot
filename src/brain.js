@@ -9,6 +9,8 @@
 import { GOAL_TYPES } from './actions.js';
 import { inventorySummary, briefState } from './perception.js';
 import { SKILL_DOCS } from './skills.js';
+import { RULE_DOCS } from './rules.js';
+import { ruleState } from './perception.js';
 
 const SYSTEM = `You are the mind of a Minecraft player bot on a multiplayer survival server. You see the world through text observations and act through tools. A fast reflex layer handles combat, fleeing and eating on its own; you decide what the bot is trying to achieve and how it treats other people.
 
@@ -23,6 +25,11 @@ Skills:
 - Keep each skill focused on one job and make it robust: check the inventory first, wrap risky actions in try/catch, and return a useful result.
 
 ${SKILL_DOCS}
+
+Reflex rules:
+- Your body reacts on its own every second using reflex rules: habits you write and refine. They run before the fast decision layer (Jev) and need no thinking, so a good rule protects you even while you are busy. Each rule's record (how often it fired, how often it helped or hurt) is in your briefing.
+- When something hurts or kills you, ask what reflex would have prevented it. Add a rule with save_rule, fix a rule that fired and didn't help, and delete rules that keep hurting. Keep rules narrow; a rule that fires constantly stops you from doing anything else.
+${RULE_DOCS}
 
 Goal types for set_goal:
 ${Object.entries(GOAL_TYPES).map(([k, v]) => `- ${k}: ${v}`).join('\n')}
@@ -125,10 +132,10 @@ const TOOLS = [
   },
   {
     name: 'inspect',
-    description: 'Look something up: full inventory, what can be crafted now, everything known about a player, or known chests and their last-seen contents.',
+    description: 'Look something up: full inventory, what can be crafted now, everything known about a player, known chests and their last-seen contents, your reflex rules (give name for one rule in full), or the current values of the rule variables (rule_state).',
     input_schema: {
       type: 'object',
-      properties: { what: { type: 'string', enum: ['inventory', 'craftable', 'player', 'chests'] }, name: { type: 'string' } },
+      properties: { what: { type: 'string', enum: ['inventory', 'craftable', 'player', 'chests', 'rules', 'rule_state'] }, name: { type: 'string' } },
       required: ['what'],
     },
   },
@@ -170,6 +177,29 @@ const TOOLS = [
     input_schema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] },
   },
   {
+    name: 'save_rule',
+    description: 'Save (or replace, by id) a reflex rule. The condition is tested on your current situation before saving.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'lowercase_with_underscores' },
+        description: { type: 'string', description: 'What situation it handles and why this reflex.' },
+        when: { description: 'Condition in the expression language, over the rule variables.' },
+        do: { type: 'string', description: 'The reflex to run.' },
+        priority: { type: 'integer', description: '0-100, higher is checked first' },
+        holdSeconds: { type: 'number' },
+        cooldownSeconds: { type: 'number' },
+        tell: { type: 'string' },
+      },
+      required: ['id', 'description', 'when', 'do', 'priority'],
+    },
+  },
+  {
+    name: 'delete_rule',
+    description: 'Delete a reflex rule that is wrong or keeps hurting you.',
+    input_schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+  },
+  {
     name: 'write_handoff',
     description: 'Write the note your next instance will read first. Only call this when asked to hand off.',
     input_schema: { type: 'object', properties: { notes: { type: 'string' } }, required: ['notes'] },
@@ -182,8 +212,9 @@ const OPENAI_TOOLS = TOOLS.map((t) => ({
 }));
 
 export class Brain {
-  constructor({ bot, memory, players, executor, skills, experience, config, log }) {
+  constructor({ bot, memory, players, executor, skills, rules, experience, config, log }) {
     this.bot = bot;
+    this.rules = rules;
     this.experience = experience;
     this.skills = skills;
     this.memory = memory;
@@ -213,7 +244,7 @@ export class Brain {
       const view = typeof snapshot === 'function' ? snapshot() : snapshot;
       const text = `[${new Date().toISOString().slice(11, 19)}] Woken because: ${reasons.join('; ')}\nObservation: ${JSON.stringify(view)}`;
       if (this.messages.length === 0) {
-        this.#appendUser(this.memory.digest(this.players.summary(), this.skills.summary()) + '\n\n' + text);
+        this.#appendUser(this.memory.digest(this.players.summary(), this.skills.summary(), this.rules?.summary()) + '\n\n' + text);
       } else {
         this.#appendUser(text);
       }
@@ -375,6 +406,11 @@ export class Brain {
       case 'inspect':
         if (input.what === 'inventory') return JSON.stringify(inventorySummary(bot));
         if (input.what === 'chests') return memory.chestSummary() || 'no chests known';
+        if (input.what === 'rules') {
+          if (input.name) return JSON.stringify(this.rules.get(input.name) ?? `no rule called ${input.name}`);
+          return this.rules.summary() || 'no rules';
+        }
+        if (input.what === 'rule_state') return JSON.stringify(ruleState(bot, players, executor));
         if (input.what === 'player') {
           const rec = players.players[input.name];
           if (!rec) return `never met ${input.name}`;
@@ -404,6 +440,15 @@ export class Brain {
         memory.log('skill_saved', { text: `${input.name} v${s.version}: ${input.description}` });
         return `saved skill ${input.name} (version ${s.version})`;
       }
+      case 'save_rule': {
+        const r = this.rules.save(input, ruleState(bot, players, executor));
+        memory.log('rule_saved', { text: `${r.id} v${r.version}: ${r.description}` });
+        return `saved rule ${r.id} (version ${r.version})`;
+      }
+      case 'delete_rule':
+        if (!this.rules.delete(input.id)) return `no rule called ${input.id}`;
+        memory.log('rule_deleted', { text: input.id });
+        return `deleted rule ${input.id}`;
       case 'read_skill':
         return JSON.stringify(this.skills.read(input.name));
       case 'delete_skill':

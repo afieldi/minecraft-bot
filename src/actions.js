@@ -829,7 +829,7 @@ export const GOALS = {
     if (!g.site) {
       if (have < 9) throw new Error(`need at least 9 ${material} for a shelter, have ${have}`);
       const p = bot.entity.position.floored();
-      g.site = { x: p.x, y: p.y, z: p.z, hut: have >= 50 };
+      g.site = { x: p.x, y: p.y, z: p.z, hut: have >= 50 && !g.pod };
     }
     const base = new Vec3(g.site.x, g.site.y, g.site.z);
     if (!bot.entity.position.floored().equals(base)) await moveTo(bot, new goals.GoalBlock(base.x, base.y, base.z), check);
@@ -954,6 +954,14 @@ export const REFLEXES = {
       await GOALS.shelter(bot, { block: material }, { check: () => {}, memory }).catch(() => {});
     }
     if (bot.food < 20 && foodItems(bot).length) await REFLEXES.eat(bot).catch(() => {});
+  },
+
+  // A 1x1 pod of dirt or cobble around us: breaks line of sight and keeps
+  // melee mobs out while we recover. The next goal digs us out.
+  async wall_in(bot, { memory }) {
+    const material = pickBuildBlock(bot);
+    if (!material || countItem(bot, (i) => i.name === material) < 9) throw new Error('need 9 dirt or cobblestone to wall in');
+    await GOALS.shelter(bot, { block: material, pod: true }, { check: () => {}, memory });
   },
 
   async face_player(bot, { player }) {
