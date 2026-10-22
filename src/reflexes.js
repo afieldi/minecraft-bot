@@ -7,12 +7,12 @@
 // scorer does. Jev is only queried when there is a real choice to make, so a
 // quiet tick costs nothing.
 
-import { hostilesNear, foodItems, bestWeapon } from './perception.js';
+import { hostilesNear, foodItems, bestWeapon, isRanged, hasShield } from './perception.js';
 
 export const ACTIONS = {
   continue_goal: 'Keep working on the current goal from the planner. Right when nothing urgent is happening.',
   flee: 'Run away from nearby threats. Right when outmatched: low health, no weapon, several hostiles, or a dangerous player.',
-  fight: 'Attack the nearest hostile mob. Right when it is close, the bot is healthy enough and fleeing would be worse.',
+  fight: 'Attack the nearest hostile mob. Right when it is close, the bot is healthy enough and fleeing would be worse. Against skeletons and other archers the bot advances behind its shield, so with a shield this beats fleeing.',
   defend: 'Fight back against a player who is actively attacking the bot.',
   eat: 'Eat food from the inventory. Right when hunger is low or health needs to regenerate and no enemy is in striking distance.',
   face_player: 'Stop and look at a nearby player who is talking to the bot or approaching, so the planner can respond socially.',
@@ -32,8 +32,11 @@ export class Reflexes {
     const c = ['continue_goal'];
     const hostiles = hostilesNear(this.bot, 12);
     const attackers = this.players.nearby(10).filter((p) => p.attackedMeRecently);
-    if (hostiles.length || attackers.length || this.players.nearby(16).some((p) => p.relation === 'hostile')) c.push('flee');
-    if (hostiles.some((h) => h.distance < 8) && this.bot.health > 8) c.push('fight');
+    // Running from archers just gets us shot in the back; only flee from them when hurt.
+    const fleeable = hostiles.some((h) => !isRanged(h.entity)) || (hostiles.length && this.bot.health <= 10);
+    if (fleeable || attackers.length || this.players.nearby(16).some((p) => p.relation === 'hostile')) c.push('flee');
+    const shield = hasShield(this.bot);
+    if (hostiles.some((h) => h.distance < 8 || (shield && isRanged(h.entity))) && this.bot.health > 8) c.push('fight');
     if (attackers.length) c.push('defend');
     if (this.bot.food < 18 && foodItems(this.bot).length) c.push('eat');
     if (this.players.nearby(6).some((p) => p.relation !== 'hostile')) c.push('face_player');

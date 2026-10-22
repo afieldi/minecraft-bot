@@ -12,6 +12,16 @@ const VALUABLE_BLOCKS = [
   'copper_ore', 'chest', 'crafting_table', 'furnace',
 ];
 
+// Mobs that hurt from range: running from them just gets us shot in the back.
+const RANGED = new Set(['skeleton', 'stray', 'bogged', 'pillager', 'witch', 'blaze', 'ghast']);
+export function isRanged(entity) {
+  return !!entity && RANGED.has(entity.name);
+}
+
+export function hasShield(bot) {
+  return bot.inventory.items().some((i) => i.name === 'shield') || bot.inventory.slots[45]?.name === 'shield';
+}
+
 export function isHostile(entity) {
   if (!entity || entity.type === 'player') return false;
   return entity.type === 'hostile' || HOSTILE.has(entity.name);
