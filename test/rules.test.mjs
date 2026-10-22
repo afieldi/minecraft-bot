@@ -26,6 +26,8 @@ assert.equal(evaluate({ count: ['$hostiles', { lt: ['$it.distance', 5] }] }, st(
 assert.deepEqual(evaluate({ where: ['$hostiles', { eq: ['$it.name', 'zombie'] }] }, st({ hostiles: [zombie, skeleton] })), [zombie]);
 assert.equal(evaluate({ all: [[], false] }, base), true);
 assert.equal(evaluate({ in: ['dusk', ['dusk', 'night']] }, base), true);
+// A malformed comparison says what is wrong (the brain wrote this one).
+assert.throws(() => evaluate({ filter: ['$hostiles', 'y', { gte: 71 }] }, base), /"gte" takes a list of two values/);
 
 const memory = new Memory(dir, 'T');
 const logs = [];
