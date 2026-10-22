@@ -15,8 +15,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Vec3 } from 'vec3';
 import pathfinderPkg from 'mineflayer-pathfinder';
-import { GOALS, REFLEXES, moveTo, placeAt, countItem, matchBlockIds, chestContents } from './actions.js';
-import { inventorySummary } from './perception.js';
+import { GOALS, REFLEXES, moveTo, placeAt, countItem, matchBlockIds, chestContents, centerInBlock } from './actions.js';
+import { inventorySummary, foodStock } from './perception.js';
 
 const { goals } = pathfinderPkg;
 const NAME_RE = /^[a-z][a-z0-9_]{1,40}$/;
@@ -28,11 +28,12 @@ const MAX_TIMEOUT_S = 1800;
 // action name -> parameter names, in order. Args can be given as an object
 // with these names or as an array in this order.
 const ACTIONS = {
-  position: [], health: [], food: [], timeOfDay: [], inventory: [],
+  position: [], health: [], food: [], foodStock: [], timeOfDay: [], inventory: [],
   blockAt: ['pos'],
   findBlocks: ['name', 'maxDistance', 'count'],
   nearby: ['maxDistance'],
   moveTo: ['pos', 'range'],
+  center: [],
   dig: ['pos'],
   place: ['item', 'pos'],
   useOn: ['item', 'pos'],
@@ -47,6 +48,7 @@ const ACTIONS = {
   withdraw: ['pos', 'item', 'count'],
   goal: ['type', 'args'],
   skill: ['name', 'args'],
+  saveLocation: ['name', 'note'],
   say: ['message'],
   wait: ['seconds'],
 };
@@ -65,21 +67,21 @@ Steps:
 
 Expressions: literals, "$refs", {"x": .., "y": .., "z": ..} objects with exprs inside, and operators:
 {"offset": [pos, dx, dy, dz]}, {"add": [a, b]} (numbers, or joins two lists), {"sub": [a, b]}, {"len": list}, {"first": list}, {"inv": "item"} (count held),
-{"filter": [list, "field.path", value]}, {"eq"|"ne"|"gt"|"gte"|"lt"|"lte": [a, b]}, {"not": c}, {"and": [..]}, {"or": [..]}, {"in": [x, list]},
+{"filter": [list, "field.path", value]}, {"default": [value, fallback]}, {"eq"|"ne"|"gt"|"gte"|"lt"|"lte": [a, b]}, {"not": c}, {"and": [..]}, {"or": [..]}, {"in": [x, list]},
 {"any"|"all"|"count"|"where": [list, cond]} (cond sees each item as "$it", e.g. {"any": ["$hostiles", {"eq": ["$it.name", "creeper"]}]})
 
 Actions (positions are {x,y,z}):
-- position, health, food, timeOfDay (0-24000; night 13000-23000), inventory -> {item: count}
+- position, health, food, foodStock (edible items carried), timeOfDay (0-24000; night 13000-23000), inventory -> {item: count}
 - blockAt {pos} -> {name, position, properties} (properties are block states, e.g. wheat age 0-7)
 - findBlocks {name, maxDistance=32, count=20} -> positions nearest first; name can be partial ("log")
 - nearby {maxDistance=16} -> [{name, type, username, position, distance}] incl. dropped items (type "dropped_item")
-- moveTo {pos, range=1}; dig {pos}; place {item, pos}; equip {item, slot=hand}
+- moveTo {pos, range=1}; center (step to the middle of the current block, e.g. before building around yourself); dig {pos}; place {item, pos}; equip {item, slot=hand}
 - useOn {item, pos} right-click a block holding item (null = empty hand): till with a hoe, bonemeal, doors, levers
 - plant {item, pos} put seeds/saplings on top of the soil block at pos
 - craft {item, count}; attack {target}; eat; collectDrops {maxDistance=8}
 - chestItems {pos}; deposit {pos, item, count}; withdraw {pos, item, count} (only your own or shared chests)
 - goal {type, args} run a built-in goal; skill {name, args} run another saved skill
-- say {message}; wait {seconds}
+- saveLocation {name, note} name where you stand; say {message}; wait {seconds}
 
 Example, harvest ripe wheat nearby and replant:
 [{"do":"findBlocks","args":{"name":"wheat","maxDistance":24,"count":64},"as":"crops"},
@@ -100,6 +102,9 @@ export class SkillLibrary {
     fs.mkdirSync(this.dir, { recursive: true });
     this.indexFile = path.join(this.dir, 'index.json');
     this.index = readJson(this.indexFile, {});
+    // Starter skills the bot deleted; they aren't seeded again.
+    this.retiredFile = path.join(this.dir, 'retired-starters.json');
+    this.retired = readJson(this.retiredFile, []);
     this.#seedStarters();
   }
 
@@ -109,7 +114,7 @@ export class SkillLibrary {
     if (!fs.existsSync(starters)) return;
     for (const file of fs.readdirSync(starters).filter((f) => f.endsWith('.json'))) {
       const name = file.replace(/\.json$/, '');
-      if (this.index[name]) continue;
+      if (this.index[name] || this.retired.includes(name)) continue;
       const skill = readJson(path.join(starters, file), null);
       if (skill) this.save(name, skill.description, skill.steps, 'starter');
     }
@@ -125,7 +130,7 @@ export class SkillLibrary {
     const prev = this.index[name];
     this.index[name] = {
       description,
-      author,
+      author: prev?.author?.startsWith('starter') && author === 'brain' ? 'starter, revised' : author,
       version: (prev?.version ?? 0) + 1,
       savedAt: new Date().toISOString(),
       runs: prev?.runs ?? 0,
@@ -144,6 +149,10 @@ export class SkillLibrary {
 
   delete(name) {
     if (!this.index[name]) return false;
+    if (this.index[name].author?.startsWith('starter') && !this.retired.includes(name)) {
+      this.retired.push(name);
+      fs.writeFileSync(this.retiredFile, JSON.stringify(this.retired));
+    }
     delete this.index[name];
     fs.rmSync(path.join(this.dir, `${name}.json`), { force: true });
     this.#persist();
@@ -249,6 +258,7 @@ export function evaluate(e, vars) {
         return list.filter(test);
       }
       case 'in': { const [x, list] = a(); return (list ?? []).includes(x); }
+      case 'default': { const [x, d] = a(); return x ?? d; }
       case 'and': return a().every(Boolean);
       case 'or': return a().some(Boolean);
     }
@@ -417,6 +427,7 @@ function makeApi(ctx) {
     position: () => plain(bot.entity.position),
     health: () => bot.health,
     food: () => bot.food,
+    foodStock: () => foodStock(bot),
     timeOfDay: () => bot.time.timeOfDay,
     inventory: () => inventorySummary(bot),
     blockAt: (p) => blockInfo(vec(p)),
@@ -434,6 +445,14 @@ function makeApi(ctx) {
           distance: Math.round(e.position.distanceTo(me) * 10) / 10,
         }))
         .sort((a, b) => a.distance - b.distance);
+    },
+    async center() {
+      await centerInBlock(bot, guard);
+      return plain(bot.entity.position);
+    },
+    saveLocation(name, note = '') {
+      memory.saveLocation(String(name), bot.entity.position, bot.game.dimension, note);
+      return true;
     },
     async moveTo(p, range = 1) {
       const pos = vec(p);

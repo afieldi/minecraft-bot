@@ -3,7 +3,7 @@
 // once the reflex finishes.
 import pathfinderPkg from 'mineflayer-pathfinder';
 import { Vec3 } from 'vec3';
-import { hostilesNear, foodItems, bestWeapon, foodStock, isRanged, hasShield } from './perception.js';
+import { hostilesNear, foodItems, bestWeapon, isRanged, hasShield } from './perception.js';
 
 const { goals } = pathfinderPkg;
 
@@ -18,7 +18,6 @@ export const GOAL_TYPES = {
   give: '{ player, item, count? } - walk to a player and drop items for them',
   equip: '{ item } - hold an item, or wear it if it is armor',
   eat: '{} - eat something',
-  hunt: '{ count?=6 } - kill nearby food animals (cow, pig, sheep, chicken, ...) and pick up the meat; explores a little if none are around. Cook raw meat with smelt',
   sleep: '{} - find or place a bed and sleep (only works at night)',
   smelt: '{ input, count?, fuel? } - smelt or cook in a furnace, e.g. raw_iron, beef, sand; places a furnace if needed',
   toss: '{ item, count? } - drop items you do not need (e.g. leaf_litter, dirt, gravel) to free inventory space',
@@ -27,7 +26,6 @@ export const GOAL_TYPES = {
   build: '{ blocks: [[dx, dy, dz, block], ...], origin? } - place blocks relative to origin {x,y,z} (default: where you stand). Max 200 blocks',
   skill: '{ name, args?, timeoutSeconds? } - run one of your saved skills',
   steps: '{ steps, args?, timeoutSeconds? } - run a one-off step list (run_steps does this and shows you the result)',
-  shelter: '{ block? } - seal yourself in a small hut (5x5 with roof, needs 50 blocks) or a 1x1 pod (9 blocks). You dig out when the next goal moves you',
 };
 
 class Cancelled extends Error {}
@@ -360,7 +358,6 @@ const BUILD_BLOCKS = ['cobblestone', 'cobbled_deepslate', 'dirt', 'stone', 'ande
 const FUEL_VALUE = { coal: 8, charcoal: 8, coal_block: 80, blaze_rod: 12, lava_bucket: 100 };
 const fuelValue = (name) => FUEL_VALUE[name] ?? (/_planks$/.test(name) || /_log$/.test(name) || /_wood$/.test(name) ? 1.5 : /stick$/.test(name) ? 0.5 : 0);
 
-const FOOD_ANIMALS = ['cow', 'pig', 'sheep', 'chicken', 'rabbit', 'mooshroom', 'goat'];
 
 const isSolid = (b) => b && b.boundingBox === 'block';
 const isAirLike = (b) => b && (b.name === 'air' || b.name === 'cave_air' || b.name === 'water' || b.boundingBox === 'empty');
@@ -609,34 +606,6 @@ export const GOALS = {
     return ent.isValid ? `gave up attacking ${target}` : `defeated ${target}`;
   },
 
-  async hunt(bot, { count = 6, maxDistance = 48 }, { check }) {
-    const start = foodStock(bot);
-    let kills = 0;
-    let searches = 0;
-    for (let tries = 0; tries < 16 && foodStock(bot) - start < count; tries++) {
-      const me = bot.entity.position;
-      const prey = bot.nearestEntity((e) => FOOD_ANIMALS.includes(e.name) && e.position.distanceTo(me) <= maxDistance && Math.abs(e.position.y - me.y) < 8);
-      if (!prey) {
-        if (++searches > 3) break;
-        await GOALS.explore(bot, { distance: 40 }, { check }).catch((err) => { check(); if (searches > 3) throw err; });
-        continue;
-      }
-      const weapon = bestWeapon(bot);
-      if (weapon) await bot.equip(weapon, 'hand');
-      bot.pvp.attack(prey);
-      const end = Date.now() + 30000;
-      while (prey.isValid && Date.now() < end) { await sleep(300); check(); }
-      bot.pvp.stop();
-      if (!prey.isValid) {
-        kills++;
-        await pickUpDrops(bot, prey.position, check);
-      }
-    }
-    const got = foodStock(bot) - start;
-    if (got <= 0) throw new Error(kills ? `killed ${kills} animals but picked up no food` : 'no food animals found, even after exploring; try fishing spots, crops or another direction');
-    return `hunted ${kills} animals for ${got} food (cook raw meat with smelt)`;
-  },
-
   async toss(bot, { item, count }) {
     const total = countItem(bot, (i) => i.name === item);
     if (!total) throw new Error(`I have no ${item}`);
@@ -812,43 +781,6 @@ export const GOALS = {
     if (!placed && failures.length) throw new Error(`placed nothing: ${failures[0]}`);
     return `placed ${placed} of ${blocks.length} blocks at ${base}` + (failures.length ? ` (${failures.length} failed, e.g. ${failures[0]})` : '');
   },
-
-  async shelter(bot, g, { check, memory }) {
-    const material = pickBuildBlock(bot, g.block);
-    if (!material) throw new Error(g.block ? `I have no ${g.block}` : 'no building blocks (dirt, cobblestone or planks)');
-    const have = countItem(bot, (i) => i.name === material);
-    // A reflex (fleeing, eating) can interrupt the build and restart this goal.
-    // Remember the site so we go back and finish it instead of starting over.
-    if (!g.site) {
-      if (have < 9) throw new Error(`need at least 9 ${material} for a shelter, have ${have}`);
-      const p = bot.entity.position.floored();
-      g.site = { x: p.x, y: p.y, z: p.z, hut: have >= 50 && !g.pod };
-    }
-    const base = new Vec3(g.site.x, g.site.y, g.site.z);
-    if (!bot.entity.position.floored().equals(base)) await moveTo(bot, new goals.GoalBlock(base.x, base.y, base.z), check);
-    await centerInBlock(bot, check);
-    const blocks = [];
-    if (g.site.hut) {
-      // Sealed 5x5 hut: 3x3 inside, walls 2 high, flat roof. The pathfinder
-      // digs a way out when the next goal needs one.
-      for (let dy = 0; dy < 2; dy++) {
-        for (let dx = -2; dx <= 2; dx++) for (let dz = -2; dz <= 2; dz++) {
-          if (Math.abs(dx) === 2 || Math.abs(dz) === 2) blocks.push([dx, dy, dz, material]);
-        }
-      }
-      for (let dx = -2; dx <= 2; dx++) for (let dz = -2; dz <= 2; dz++) blocks.push([dx, 2, dz, material]);
-    } else {
-      // Emergency pod: walls at feet and head height, plus a roof.
-      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) blocks.push([dx, 0, dz, material], [dx, 1, dz, material]);
-      blocks.push([0, 2, 0, material]);
-    }
-    const missing = blocks.filter(([dx, dy, dz]) => isAirLike(bot.blockAt(base.offset(dx, dy, dz)))).length;
-    if (missing > have) throw new Error(`need ${missing} ${material} to finish the shelter, have ${have}`);
-    const { placed, failures } = await buildBlueprint(bot, base, blocks, check, material);
-    const kind = g.site.hut ? 'hut' : 'pod';
-    memory.saveLocation('shelter', base, bot.game.dimension, `${g.site.hut ? '5x5 hut' : '1x1 pod'} of ${material}`);
-    return `built a ${kind} with ${placed} ${material}` + (failures.length ? ` (${failures.length} spots failed)` : '');
-  },
 };
 
 // ---------------------------------------------------------------- reflexes
@@ -942,10 +874,7 @@ export const REFLEXES = {
       bot.pvp.stop();
     }
     if (bot.food < 20 && foodItems(bot).length) await REFLEXES.eat(bot).catch(() => {});
-    const material = pickBuildBlock(bot);
-    if (!hostilesNear(bot, 6).length && material && countItem(bot, (i) => i.name === material) >= 9) {
-      await GOALS.shelter(bot, { block: material }, { check: () => {}, memory }).catch(() => {});
-    }
+    if (!hostilesNear(bot, 6).length) await REFLEXES.wall_in(bot, { memory }).catch(() => {});
     if (bot.food < 20 && foodItems(bot).length) await REFLEXES.eat(bot).catch(() => {});
   },
 
@@ -953,8 +882,16 @@ export const REFLEXES = {
   // melee mobs out while we recover. The next goal digs us out.
   async wall_in(bot, { memory }) {
     const material = pickBuildBlock(bot);
-    if (!material || countItem(bot, (i) => i.name === material) < 9) throw new Error('need 9 dirt or cobblestone to wall in');
-    await GOALS.shelter(bot, { block: material, pod: true }, { check: () => {}, memory });
+    if (!material || countItem(bot, (i) => i.name === material) < 10) throw new Error('need 10 dirt or cobblestone to wall in');
+    const check = () => {};
+    await centerInBlock(bot, check);
+    const base = bot.entity.position.floored();
+    const blocks = [];
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) blocks.push([dx, 0, dz], [dx, 1, dz]);
+    // The roof needs a neighbour to be placed against.
+    blocks.push([1, 2, 0], [0, 2, 0]);
+    await buildBlueprint(bot, base, blocks, check, material);
+    memory?.saveLocation('shelter', base, bot.game.dimension, `1x1 pod of ${material}`);
   },
 
   async face_player(bot, { player }) {

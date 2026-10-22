@@ -46,7 +46,7 @@ export class Reflexes {
     if (bot.food < 20 && foodItems(bot).length) c.push('eat');
     if (this.players.nearby(6).some((p) => p.relation !== 'hostile')) c.push('face_player');
     if (bot.entity.isInWater && (bot.oxygenLevel ?? 20) < 20) c.push('surface');
-    if (hostiles.length && bot.inventory.items().some((i) => /^(dirt|cobblestone|cobbled_deepslate)$/.test(i.name) && i.count >= 9)) c.push('wall_in');
+    if (hostiles.length && bot.inventory.items().some((i) => /^(dirt|cobblestone|cobbled_deepslate)$/.test(i.name) && i.count >= 10)) c.push('wall_in');
     return c;
   }
 

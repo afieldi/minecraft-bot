@@ -27,7 +27,7 @@ The brain isn't limited to the built-in goals. It also has small general actions
 - `run_steps` runs a step list straight away and shows the brain the result or the error, so it can fix and retry.
 - `save_skill` stores a step list that works under a name in `data/<bot>/skills/`. Later it runs in one call as a goal, so the brain doesn't think through every step again.
 - Skills carry over to new brain instances along with the rest of the memory, with a record of how often each has worked and its last error.
-- Two starter skills, `start_wheat_field` and `tend_wheat` (in `src/starter-skills/`), are written in the same format and show the brain the pattern.
+- Starter skills in `src/starter-skills/` are written in the same format: `hunt` and `shelter` (these used to be hand-written goals), `start_wheat_field` and `tend_wheat`. They belong to the bot: it can read, rewrite or delete them like any skill, and each carries a success record.
 
 Skills are JSON data, not code. A small interpreter runs them and can only call the bot's own actions, so nothing the brain writes can touch the rest of your computer. Runs stop when the goal changes, when a reflex takes over, or when they hit their time or step limit.
 
@@ -87,7 +87,7 @@ Get a key at [openrouter.ai/keys](https://openrouter.ai/keys). The brain default
 ## Tests
 
 - `npm test` runs offline tests with a simulated bot: player tracking, attack attribution, the Jev request and fallback, chest storage and ownership rules, smelting, the skill interpreter and the starter farming skill.
-- `test/goals.sim.mjs` runs the shelter and build goals, a step list and a saved skill on a local server.
+- `test/goals.sim.mjs` runs the shelter skill, the build goal, a step list and a saved skill on a local server.
 - `test/sim.mjs` runs the whole bot against a local server with mock OpenRouter endpoints for the brain and Jev, and checks goals run, memory files are written and the brain hands off between instances. It was run against a [flying-squid](https://github.com/PrismarineJS/flying-squid) 1.16.5 server.
 
 ## Known limits
