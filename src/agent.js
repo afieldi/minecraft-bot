@@ -11,8 +11,9 @@ import { Reflexes } from './reflexes.js';
 import { JevClient } from './jev.js';
 import { Brain } from './brain.js';
 import { Arbiter } from './arbiter.js';
+import { Experience } from './experience.js';
 import { SkillLibrary, registerSkillGoals } from './skills.js';
-import { reflexState, worldSnapshot, hostilesNear, foodItems, isRanged, hasShield, bestWeapon } from './perception.js';
+import { briefState, reflexState, worldSnapshot, hostilesNear, foodItems, isRanged, hasShield, bestWeapon } from './perception.js';
 
 const { pathfinder, Movements } = pathfinderPkg;
 const ESCALATE_COOLDOWN_MS = 20000;
@@ -43,6 +44,7 @@ export class Agent {
     this.cfg = config;
     this.memory = new Memory(config.memoryDir, config.mc.username);
     this.jev = new JevClient(config.jev);
+    this.experience = new Experience(this.memory);
     this.stopped = false;
   }
 
@@ -92,7 +94,9 @@ export class Agent {
     this.reflexes = new Reflexes(bot, this.players, this.jev, log);
     this.skills = new SkillLibrary(this.memory);
     registerSkillGoals(this.skills);
-    this.brain = new Brain({ bot, memory: this.memory, players: this.players, executor: this.executor, skills: this.skills, config: this.cfg.brain, log });
+    this.brain = new Brain({ bot, memory: this.memory, players: this.players, executor: this.executor, skills: this.skills, experience: this.experience, config: this.cfg.brain, log });
+    this.experience.attach(bot);
+    this.executor.onGoalEnded = (goal, result) => this.experience.goalEnded(goal, result);
     this.arbiter = new Arbiter();
     this.arbiter.addProvider(() => this.#builtinBehaviours());
     this.lastEscalation = 0;
@@ -125,12 +129,17 @@ export class Agent {
     await Promise.race([bot.waitForChunksToLoad(), new Promise((r) => setTimeout(r, 15000))]);
 
     // Resume whatever the previous instance was doing.
-    if (this.memory.state.goal) this.executor.setGoal(this.memory.state.goal);
+    if (this.memory.state.goal) {
+      const goal = this.memory.state.goal;
+      this.experience.goalStarted(goal, { source: goal.type === 'skill' ? `skill:${goal.name}` : 'brain', reason: 'resumed after reconnecting', state: briefState(bot) });
+      this.executor.setGoal(goal);
+    }
     this.wake(this.memory.state.generation === 1 ? 'you just joined the world for the first time' : 'you just reconnected');
 
     this.reflexTimer = setInterval(() => this.#tick(), this.cfg.reflexIntervalMs);
     this.statsTimer = setInterval(() => {
-      this.log(`stats: heap ${(process.memoryUsage().heapUsed / 1e6).toFixed(0)} MB, goal ${this.executor.describe()}`);
+      const r = this.experience.run;
+      this.log(`stats: heap ${(process.memoryUsage().heapUsed / 1e6).toFixed(0)} MB, goal ${this.executor.describe()}, deaths ${r.deaths}, brain ${r.brainCalls} calls $${r.brainCostUsd.toFixed(3)}, jev ${r.jevCalls} calls`);
     }, 60000);
     this.heartbeatTimer = setInterval(() => {
       // Keep a shield in the off-hand whenever we own one.
@@ -185,6 +194,8 @@ export class Agent {
 
   stop() {
     this.stopped = true;
+    this.experience.flush();
+    this.memory.appendJsonl('runs.jsonl', { ...this.experience.run, endedAt: new Date().toISOString() });
     this.#teardown();
     this.bot?.quit();
   }
@@ -240,7 +251,13 @@ export class Agent {
         }
       }
 
-      if (d.action !== 'continue_goal' && !this.executor.reflexRunning && (d.confidence ?? 1) >= MIN_REFLEX_CONFIDENCE) {
+      if (d.source === 'jev') this.experience.count('jevCalls');
+      // A choice to carry on only matters when there was something to react to.
+      const acting = d.action !== 'continue_goal' && !this.executor.reflexRunning && (d.confidence ?? 1) >= MIN_REFLEX_CONFIDENCE;
+      if (acting || (d.source !== 'trivial' && state.hostiles.length)) {
+        this.experience.record({ source: d.source, action: acting ? d.action : 'continue_goal', confidence: d.confidence, state: briefState(this.bot) });
+      }
+      if (acting) {
         this.log(`reflex: ${d.action} (${d.source}${d.confidence ? ' ' + d.confidence.toFixed(2) : ''})`);
         this.executor.reflex(d.action, this.#reflexContext(d));
       }
@@ -260,6 +277,7 @@ export class Agent {
   // suspended, not replaced, and resumes after the reflex and its hold.
   #act(pick) {
     this.log(`reflex: ${pick.action} (${pick.source}${pick.reason ? ': ' + pick.reason : ''})`);
+    this.experience.record({ source: pick.source, action: pick.action, reason: pick.reason, state: briefState(this.bot) });
     this.executor.reflex(pick.action, { memory: this.memory, ...(pick.ctx ?? {}) }, { holdSeconds: pick.holdSeconds ?? 0 });
     if (pick.wake && Date.now() - (this.behaviourWoke.get(pick.behaviour) ?? 0) > BEHAVIOUR_WAKE_COOLDOWN_MS) {
       this.behaviourWoke.set(pick.behaviour, Date.now());
