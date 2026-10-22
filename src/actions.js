@@ -239,14 +239,36 @@ async function placeFromInventory(bot, itemName, check) {
   const free = (b) => b?.name === 'air' || b?.name === 'cave_air';
   const standable = (dx, dz) =>
     bot.blockAt(base.offset(dx, -1, dz))?.boundingBox === 'block' && free(bot.blockAt(base.offset(dx, 0, dz))) && free(bot.blockAt(base.offset(dx, 1, dz)));
-  const offsets = isBed ? [[1, 0], [-1, 0], [0, 1], [0, -1]] : [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [2, 0], [0, 2]];
-  for (const [dx, dz] of offsets) {
-    if (!standable(dx, dz) || (isBed && !standable(2 * dx, 2 * dz))) continue;
-    const ground = bot.blockAt(base.offset(dx, -1, dz));
-    await bot.equip(item, 'hand');
-    await bot.placeBlock(ground, new Vec3(0, 1, 0));
-    check();
-    return bot.blockAt(base.offset(dx, 0, dz));
+  if (isBed) {
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      if (!standable(dx, dz) || !standable(2 * dx, 2 * dz)) continue;
+      await bot.equip(item, 'hand');
+      await bot.placeBlock(bot.blockAt(base.offset(dx, -1, dz)), new Vec3(0, 1, 0));
+      check();
+      return bot.blockAt(base.offset(dx, 0, dz));
+    }
+  } else {
+    // Furnaces and tables only need a free cell on solid ground; in a 1-wide
+    // tunnel that's often a step up or down, so search a little wider.
+    const spots = [];
+    for (let dx = -2; dx <= 2; dx++) for (let dz = -2; dz <= 2; dz++) for (const dy of [0, -1, 1]) {
+      if ((dx || dz) && Math.abs(dx) + Math.abs(dz) <= 3) spots.push([dx, dy, dz]);
+    }
+    spots.sort((a, b) => Math.abs(a[0]) + Math.abs(a[2]) + Math.abs(a[1]) - (Math.abs(b[0]) + Math.abs(b[2]) + Math.abs(b[1])));
+    for (const [dx, dy, dz] of spots) {
+      const spot = base.offset(dx, dy, dz);
+      const ground = bot.blockAt(spot.offset(0, -1, 0));
+      if (ground?.boundingBox !== 'block' || !free(bot.blockAt(spot))) continue;
+      try {
+        await bot.equip(item, 'hand');
+        await bot.placeBlock(ground, new Vec3(0, 1, 0));
+      } catch (err) {
+        check();
+        continue; // out of reach or no line of sight; try the next spot
+      }
+      check();
+      return bot.blockAt(spot);
+    }
   }
   throw new Error(`no free spot to place ${itemName}${isBed ? ' (a bed needs 2 clear blocks in a row)' : ''}`);
 }
@@ -403,16 +425,21 @@ export const GOALS = {
     const ids = matchBlockIds(bot, block);
     // Without the right tool the block drops nothing, and collectBlock's
     // pathfinding then grows without bound (took the process out of memory).
-    const held = new Set(bot.inventory.items().map((i) => i.type));
-    const harvestable = ids.filter((id) => {
-      const tools = bot.registry.blocks[id].harvestTools;
-      return !tools || Object.keys(tools).some((t) => held.has(Number(t)));
-    });
-    if (!harvestable.length) {
-      const tools = Object.keys(bot.registry.blocks[ids[0]].harvestTools).map((t) => bot.registry.items[t]?.name);
-      throw new Error(`can't mine ${block} without one of: ${tools.join(', ')}`);
-    }
-    ids.splice(0, ids.length, ...harvestable);
+    // Checked every round: a pickaxe that breaks mid-goal hits the same path.
+    const allIds = [...ids];
+    const harvestableIds = () => {
+      const held = new Set(bot.inventory.items().map((i) => i.type));
+      return allIds.filter((id) => {
+        const tools = bot.registry.blocks[id].harvestTools;
+        return !tools || Object.keys(tools).some((t) => held.has(Number(t)));
+      });
+    };
+    const noTool = (prefix) => {
+      const tools = Object.keys(bot.registry.blocks[allIds[0]].harvestTools).map((t) => bot.registry.items[t]?.name);
+      return new Error(`${prefix}can't mine ${block} without one of: ${tools.join(', ')}`);
+    };
+    if (!harvestableIds().length) throw noTool('');
+    ids.splice(0, ids.length, ...harvestableIds());
     const dropNames = new Set();
     for (const id of ids) for (const d of bot.registry.blocks[id].drops ?? []) {
       const itemId = typeof d === 'number' ? d : d.drop?.id ?? d.drop;
@@ -421,6 +448,7 @@ export const GOALS = {
     const have = () => countItem(bot, (i) => dropNames.has(i.name) || i.name.includes(block));
     const start = have();
     for (let round = 0; round < 12 && have() - start < count; round++) {
+      if (!harvestableIds().length) throw noTool(`my tool broke after ${have() - start} ${block}; `);
       const want = Math.min(4, count - (have() - start));
       const found = bot.findBlocks({ matching: ids, maxDistance: 64, count: want * 8 });
       const shallowOnly = /overworld/.test(bot.game.dimension) && !readyForDepth(bot);
