@@ -190,6 +190,8 @@ export function worldSnapshot(bot, players, executor) {
     biome: bot.blockAt(pos)?.biome?.name ?? 'unknown',
     health: bot.health,
     food: bot.food,
+    air: airLevel(bot),
+    inWater: !!bot.entity.isInWater,
     timeOfDay: bot.time.timeOfDay,
     time: timeLabel(bot.time.timeOfDay),
     raining: bot.isRaining,
