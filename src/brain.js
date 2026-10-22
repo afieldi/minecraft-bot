@@ -234,8 +234,16 @@ export class Brain {
     this.handoffWritten = false;
   }
 
+  // For good: the bot this brain drives has gone. Calls already in flight
+  // finish, but no further tool runs, model calls or wake-ups happen.
+  stop() {
+    this.stopped = true;
+    this.pending = null;
+  }
+
   // Queue a wake-up. If the brain is busy, wake-ups collapse into one.
   wake(reason, snapshot) {
+    if (this.stopped) return;
     if (this.busy) {
       this.pending = { reasons: [...(this.pending?.reasons ?? []), reason], snapshot };
       return;
@@ -262,7 +270,7 @@ export class Brain {
   // Ask for a fresh instance (e.g. after sleeping). Runs once the brain is idle.
   requestRotation(reason) {
     this.rotateRequested = reason;
-    if (this.busy) return;
+    if (this.busy || this.stopped) return;
     this.busy = true;
     this.#maybeRotate()
       .catch((err) => this.log(`brain error: ${err.message}`))
@@ -270,7 +278,7 @@ export class Brain {
   }
 
   async #maybeRotate() {
-    if (this.rotateRequested) {
+    if (this.rotateRequested && !this.stopped) {
       const reason = this.rotateRequested;
       this.rotateRequested = null;
       await this.rotate(reason);
@@ -353,7 +361,9 @@ export class Brain {
 
   async #loop() {
     for (let round = 0; round < this.cfg.maxToolRounds; round++) {
+      if (this.stopped) return;
       const choice = await this.#call();
+      if (this.stopped) return;
       const msg = choice.message ?? {};
       if (choice.finish_reason === 'content_filter') {
         this.log('brain: request declined, skipping this wake-up');
@@ -369,6 +379,7 @@ export class Brain {
       const calls = msg.tool_calls ?? [];
       if (!calls.length) return;
       for (const call of calls) {
+        if (this.stopped) return;
         const name = call.function?.name;
         let input = {};
         let out;
@@ -448,15 +459,27 @@ export class Brain {
         }
         return 'unknown inspect target';
       case 'run_steps': {
+        // A trial run borrows the body; the goal it interrupts comes back
+        // afterwards, so a failed experiment doesn't silently drop it.
+        const prev = executor.goal;
         const goal = { type: 'steps', steps: input.steps, args: input.args, timeoutSeconds: input.timeout_seconds };
         this.#track(goal, 'run_steps');
         executor.setGoal(goal);
         memory.log('goal_set', { goal: { type: 'steps', count: input.steps?.length } });
         const wait = Math.min(input.wait_seconds ?? 30, 60) * 1000;
         const result = await executor.waitFor(goal, wait);
-        if (!result) return executor.goal === goal ? 'still running; you will get the result when it finishes' : 'interrupted before it finished';
-        if (!result.ok) throw new Error(result.message);
-        return result.message;
+        if (!result) {
+          if (executor.goal !== goal) return 'interrupted before it finished';
+          return 'still running; you will get the result when it finishes' + (prev ? `. It replaced your goal ${JSON.stringify(prev.type)}; set it again afterwards if you still want it` : '');
+        }
+        let resumed = '';
+        if (prev && !executor.goal && !this.stopped) {
+          this.#track(prev, 'resumed after run_steps');
+          executor.setGoal(prev);
+          resumed = ` (resumed your previous goal: ${executor.describe()})`;
+        }
+        if (!result.ok) throw new Error(result.message + resumed);
+        return result.message + resumed;
       }
       case 'save_skill': {
         const s = this.skills.save(input.name, input.description, input.steps);
