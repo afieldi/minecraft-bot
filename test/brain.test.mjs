@@ -45,16 +45,17 @@ globalThis.fetch = async (url, opts) => {
 };
 const idle = async () => { while (brain.busy) await sleep(5); };
 
-memory.remember('lesson', 'creepers explode when close');
+const lid = memory.remember('lesson', 'creepers explode when close').id;
 script = [[
   ['save_rule', { id: 'flee_creeper', description: 'run from close creepers', when: { any: ['$hostiles', { eq: ['$it.name', 'creeper'] }] }, do: 'flee', priority: 95 }],
-  ['update_lesson', { id: 1, pinned: true }],
-  ['set_goal', { type: 'idle', args: { seconds: 1 }, lessons: [1] }],
+  ['update_lesson', { id: lid, pinned: true }],
+  ['set_goal', { type: 'idle', args: { seconds: 1 }, lessons: [lid] }],
 ], []];
 brain.wake('first wake', { pos: 1 });
 await idle();
 assert.ok(rules.get('flee_creeper'), 'brain saved a rule');
-assert.equal(memory.knowledge.items[0].pinned, true);
+assert.equal(memory.knowledge.items.find((k) => k.id === lid).pinned, true);
+assert.equal(memory.knowledge.items.filter((k) => k.author === 'starter').length, 8, 'starter lessons seeded');
 const first = requests[0].messages[1];
 assert.equal(first.role, 'user');
 assert.match(first.content[0].text, /# Your reflex rules/);
@@ -69,7 +70,7 @@ script = [[]];
 brain.wake('second wake', {});
 await idle();
 assert.match(requests[2].messages[1].content[0].text, /flee_creeper/);
-assert.match(requests[2].messages[1].content[0].text, /#1 lesson, pinned/);
+assert.match(requests[2].messages[1].content[0].text, new RegExp(`#${lid} lesson, pinned`));
 // History is bounded to the last 3 wake-ups.
 for (let i = 0; i < 4; i++) { script = [[]]; brain.wake(`wake ${i}`, {}); await idle(); }
 const last = requests.at(-1).messages;
@@ -79,7 +80,7 @@ assert.equal(brain.history.length, 3);
 
 // Lessons cited by a goal share its score.
 await sleep(1300);
-assert.equal(experience.score('lesson:1')?.helped, 1);
+assert.equal(experience.score(`lesson:${lid}`)?.helped, 1);
 
 // End of a generation: consolidation prompt, handoff, history cleared.
 const gen = memory.state.generation;

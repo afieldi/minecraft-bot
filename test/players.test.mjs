@@ -57,7 +57,7 @@ const srv = http.createServer((req, res) => {
 });
 await new Promise((r) => srv.listen(18081, r));
 const jev = new JevClient({ apiKey: 'x', model: 'jev-latest', baseUrl: 'http://127.0.0.1:18081', timeoutMs: 2000 });
-const reflexes = new Reflexes(bot, players, jev);
+const reflexes = new Reflexes(bot, players, jev, () => {}, () => ['creepers explode when close']);
 const executor = { describe: () => 'collect {"block":"log","count":5}' };
 
 bot.food = 12;
@@ -73,7 +73,8 @@ assert.equal(d.threats.Steve, 0.88);
 assert.ok(d.escalate > 0.7);
 assert.equal(jevBody.model, 'jev-latest');
 assert.equal(jevBody.questions.action.type, 'choice');
-assert.deepEqual(Object.keys(jevBody.questions.action.criteria).sort(), ['continue_goal', 'defend', 'eat', 'face_player', 'fight', 'flee']);
+assert.deepEqual(Object.keys(jevBody.questions.action.criteria).sort(), ['continue_goal', 'defend', 'eat', 'face_player', 'fight', 'flee', 'retreat']);
+assert.match(jevBody.questions.action.instructions, /has learned: - creepers explode/);
 assert.equal(jevBody.questions.threat_Steve.type, 'noul');
 
 // Without a key, the utility scorer makes the same kind of call.

@@ -1,0 +1,10 @@
+[
+  {"category": "lesson", "text": "Survival order that has worked: wood, then tools, then food (hunt, cook with smelt), shelter before night, a bed, then iron, armor and a base."},
+  {"category": "lesson", "text": "Before night, sleep in a bed if you have one; otherwise use the shelter goal. Mobs spawn from timeOfDay 13000."},
+  {"category": "lesson", "text": "Caves and mines are far more dangerous at night. Around timeOfDay 11500 stop deep mining and get to the surface or wall in before dark."},
+  {"category": "lesson", "text": "Keep at least 8 food in your inventory. Hunt while animals are around, cook the meat, and start a wheat field (start_wheat_field skill) once you have seeds."},
+  {"category": "lesson", "text": "After your health drops low, let it recover to about 14 before mining or fighting again."},
+  {"category": "lesson", "text": "Craft a shield (1 iron ingot + 6 planks) as soon as you have an iron ingot. The fight reflex walks at skeletons behind it; without one, running from archers gets you shot in the back."},
+  {"category": "lesson", "text": "Flooded caves and deep water drowned you before. Collect with avoidWater: true underground, and don't swim back for dropped items."},
+  {"category": "lesson", "text": "Below y=20 mobs are thicker. Until you have 2+ armor pieces and 4+ food, collect with minY: 20; iron is common above that too."}
+]

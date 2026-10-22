@@ -1,14 +1,24 @@
 # Minecraft bot
 
-A Mineflayer bot for multiplayer survival servers with three layers:
+A Mineflayer bot for multiplayer survival servers that learns how to survive instead of following hand-written rules. Survival strategy lives in data the bot writes and scores itself: reflex rules, lessons and skills.
 
 | Layer | What it does | How often |
 |---|---|---|
-| **Brain** (DeepSeek Flash via OpenRouter, `src/brain.js`) | Sets goals, plans, chats with players, decides who to trust and what to remember | When something happens (chat, a player arrives, you get hit, a goal finishes) plus a slow heartbeat |
-| **Reflexes** (Jev via OpenRouter, `src/reflexes.js`) | Picks one immediate action each tick: keep working, flee, fight, defend, eat, or face a player. Also scores how threatening each nearby player is and whether to wake the brain | Every second, but only calls Jev when there is a real choice |
-| **Body** (`src/actions.js`, `src/skills.js`) | Runs built-in goals (walking, mining, crafting, smelting, chests, building, shelters, combat, sleeping) and skills the brain wrote itself | Continuously |
+| **Brain** (DeepSeek Flash via OpenRouter, `src/brain.js`) | Sets goals, chats with players, decides who to trust, and writes its own rules, lessons and skills | When something happens (chat, a player arrives, you get hit, a goal finishes, a death) plus a slow heartbeat |
+| **Reflex rules** (`src/rules.js`, `src/arbiter.js`) | Habits the bot wrote: a condition and a reflex (surface, flee, fight, retreat, wall in...). Checked locally, highest priority first | Every second, no network call |
+| **Jev** (via OpenRouter, `src/reflexes.js`) | Picks an action when no rule fires, guided by the bot's best lessons. Also scores how threatening nearby players are and whether to wake the brain | Every second when there is a real choice |
+| **Body** (`src/actions.js`, `src/skills.js`) | Runs goals and skills; reflexes suspend the current goal and it resumes afterwards | Continuously |
 
-Both layers use one OpenRouter key. If Jev is unavailable, or you set `JEV_DISABLED=1`, the reflex layer falls back to a built-in utility scorer, so the bot still works.
+Both the brain and Jev use one OpenRouter key. If Jev is unavailable, or you set `JEV_DISABLED=1`, a small utility scorer stands in for it.
+
+## How it learns
+
+1. **Act.** Every decision is tagged with what made it: a rule, Jev, the brain, a skill, or the lessons a goal cites.
+2. **Record.** `src/experience.js` judges each decision by what happened next: damage and deaths in the following 20 seconds for reflexes, and for goals whether they finished. Records go to `experience.jsonl`; running scores (used, helped, hurt, deaths) to `scores.json`.
+3. **Reflect.** After a death, or a failure that cost health, the brain sees the episode decision by decision with the scores of everything involved, and is asked what would have prevented it. It adds or fixes a rule, saves a lesson, or deletes what hurt.
+4. **Consolidate.** Waking from a bed ends a generation: the brain merges and pins lessons and prunes rules and skills with bad records.
+
+What stays in code is plumbing, not strategy: primitives, perception, workarounds for Mineflayer and server quirks (hitbox width, slow crafting clicks, move timeouts), and a few safety limits (other players' chests and builds). The bot starts with a few starter rules (`src/starter-rules/`) and lessons (`src/starter-lessons.json`) as advice it owns and can change; a deleted starter stays deleted.
 
 ## Skills the bot writes itself
 
@@ -28,7 +38,10 @@ See `SKILL_DOCS` in `src/skills.js` for the format.
 Everything lives in `data/<bot name>/` and survives restarts:
 
 - `state.json`: brain generation, current goal and plan (the goal resumes after a restart)
-- `knowledge.json`: facts and lessons the brain chose to `remember`
+- `knowledge.json`: facts and lessons (starter lessons, then whatever the brain remembers; pinned items are never dropped)
+- `rules.json`: reflex rules, with their version and author
+- `experience.jsonl`, `scores.json`: every decision with its outcome, and running scores per rule, skill, lesson and decision source
+- `runs.jsonl`: per-run totals (deaths, damage, brain calls and cost, Jev calls)
 - `players.json`: everyone met, with relation (friend / neutral / wary / hostile), notes, recent chat and how often they hit the bot
 - `locations.json`: named places
 - `skills/`: saved skills and their success records
