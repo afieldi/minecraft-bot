@@ -3,7 +3,7 @@
 // once the reflex finishes.
 import pathfinderPkg from 'mineflayer-pathfinder';
 import { Vec3 } from 'vec3';
-import { hostilesNear, foodItems, bestWeapon, foodStock, armorPieces, isRanged, hasShield } from './perception.js';
+import { hostilesNear, foodItems, bestWeapon, foodStock, isRanged, hasShield } from './perception.js';
 
 const { goals } = pathfinderPkg;
 
@@ -12,7 +12,7 @@ export const GOAL_TYPES = {
   goto: '{ x, y, z } or { location: "<saved place>" } or { player: "<name>" } - walk there',
   follow: '{ player, distance? } - keep following a player until the goal changes',
   explore: '{ distance? } - wander in a random direction to find new things',
-  collect: '{ block, count } - mine/gather blocks, e.g. "oak_log", or "log" for any log',
+  collect: '{ block, count, minY?, avoidWater? } - mine/gather blocks, e.g. "oak_log", or "log" for any log. minY: skip blocks below this y; avoidWater: skip blocks next to water',
   craft: '{ item, count? } - craft an item, placing a crafting table if needed',
   attack: '{ target } - attack a mob type (e.g. "zombie", "cow") or a player by name',
   give: '{ player, item, count? } - walk to a player and drop items for them',
@@ -360,12 +360,6 @@ const BUILD_BLOCKS = ['cobblestone', 'cobbled_deepslate', 'dirt', 'stone', 'ande
 const FUEL_VALUE = { coal: 8, charcoal: 8, coal_block: 80, blaze_rod: 12, lava_bucket: 100 };
 const fuelValue = (name) => FUEL_VALUE[name] ?? (/_planks$/.test(name) || /_log$/.test(name) || /_wood$/.test(name) ? 1.5 : /stick$/.test(name) ? 0.5 : 0);
 
-// Deep caves at low gear were the main cause of death in long runs, so
-// collect won't chase blocks below DEEP_Y without some armor and food.
-const DEEP_Y = 20;
-const DEPTH_MIN_ARMOR = 2;
-const DEPTH_MIN_FOOD = 4;
-const readyForDepth = (bot) => armorPieces(bot) >= DEPTH_MIN_ARMOR && foodStock(bot) >= DEPTH_MIN_FOOD;
 const FOOD_ANIMALS = ['cow', 'pig', 'sheep', 'chicken', 'rabbit', 'mooshroom', 'goat'];
 
 const isSolid = (b) => b && b.boundingBox === 'block';
@@ -502,7 +496,7 @@ export const GOALS = {
     return `explored to ${x} ${z}`;
   },
 
-  async collect(bot, { block, count = 1 }, { check }) {
+  async collect(bot, { block, count = 1, minY, avoidWater = false }, { check }) {
     const ids = matchBlockIds(bot, block);
     // Without the right tool the block drops nothing, and collectBlock's
     // pathfinding then grows without bound (took the process out of memory).
@@ -532,15 +526,14 @@ export const GOALS = {
       if (!harvestableIds().length) throw noTool(`my tool broke after ${have() - start} ${block}; `);
       const want = Math.min(4, count - (have() - start));
       const found = bot.findBlocks({ matching: ids, maxDistance: 64, count: want * 8 });
-      const shallowOnly = /overworld/.test(bot.game.dimension) && !readyForDepth(bot);
-      // Skip blocks touching water: digging them floods the tunnel, which is
-      // how the bot ended up drowning in caves.
+      // Optional limits the brain can ask for: stay at or above minY, and skip
+      // blocks touching water (digging those floods the tunnel).
       const wet = (p) => [[0, 1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]].some((d) => bot.blockAt(p.offset(...d))?.name === 'water');
-      const positions = found.filter((p) => !(shallowOnly && p.y < DEEP_Y) && !wet(p)).slice(0, want);
+      const positions = found.filter((p) => !(minY !== undefined && p.y < minY) && !(avoidWater && wet(p))).slice(0, want);
       if (!positions.length) {
         if (round > 0) break;
-        if (found.length && found.every(wet)) throw new Error(`every ${block} nearby is next to water; digging it would flood the tunnel`);
-        if (found.length) throw new Error(`the nearest ${block} is below y=${DEEP_Y}; only go that deep with ${DEPTH_MIN_ARMOR}+ armor pieces and ${DEPTH_MIN_FOOD}+ food`);
+        if (found.length && avoidWater && found.every(wet)) throw new Error(`every ${block} nearby is next to water (avoidWater is on)`);
+        if (found.length) throw new Error(`the nearest ${block} is below y=${minY} (minY is set)`);
         throw new Error(`no ${block} within 64 blocks; try exploring first`);
       }
       const targets = positions.map((p) => bot.blockAt(p)).filter(Boolean);

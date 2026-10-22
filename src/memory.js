@@ -2,7 +2,7 @@
 // brain instances lives in one folder per bot:
 //
 //   state.json      generation counter, current goal and plan
-//   knowledge.json  facts and lessons the brain chose to remember
+//   knowledge.json  facts and lessons (a few starter lessons, then whatever the brain remembers)
 //   players.json    everyone the bot has met (owned by PlayerTracker)
 //   locations.json  named places
 //   chests.json     chests the bot knows, who owns them and what was in them
@@ -10,6 +10,7 @@
 //   journal.jsonl   append-only event log
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const MAX_KNOWLEDGE = 300;
 
@@ -24,8 +25,23 @@ export class Memory {
       createdAt: new Date().toISOString(),
     });
     this.knowledge = this.#readJson('knowledge.json', { nextId: 1, items: [] });
+    this.#seedLessons();
     this.locations = this.#readJson('locations.json', {});
     this.chests = this.#readJson('chests.json', {});
+  }
+
+  // A new bot starts with a few lessons as advice. They are ordinary memory
+  // items: scored when followed, and the bot can rewrite or forget them.
+  #seedLessons() {
+    if (this.knowledge.seeded) return;
+    const file = path.join(path.dirname(fileURLToPath(import.meta.url)), 'starter-lessons.json');
+    let lessons = [];
+    try { lessons = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
+    for (const l of lessons) {
+      this.knowledge.items.push({ id: this.knowledge.nextId++, category: l.category, text: l.text, author: 'starter', t: new Date().toISOString() });
+    }
+    this.knowledge.seeded = true;
+    this.writeJson('knowledge.json', this.knowledge);
   }
 
   #file(name) {

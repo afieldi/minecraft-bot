@@ -22,8 +22,6 @@ const THREAT_ALERT = 0.75;
 // Jev sometimes picks flee/fight with very low confidence; acting on those
 // makes the bot abandon its goal over nothing.
 const MIN_REFLEX_CONFIDENCE = 0.3;
-const DUSK_START = 11500;
-const DUSK_END = 13000;
 const BEHAVIOUR_WAKE_COOLDOWN_MS = 30000;
 // Pathfinding inside collectBlock can run away (e.g. a tool breaks mid-goal)
 // and take the process out of memory; abort the goal well before that.
@@ -90,7 +88,7 @@ export class Agent {
 
     this.players = new PlayerTracker(bot, this.memory, this.cfg.trustedPlayers);
     this.executor = new Executor(bot, this.memory, log);
-    this.reflexes = new Reflexes(bot, this.players, this.jev, log);
+    this.reflexes = new Reflexes(bot, this.players, this.jev, log, () => this.#jevLessons());
     this.skills = new SkillLibrary(this.memory);
     registerSkillGoals(this.skills);
     this.rules = new RuleBook(this.memory, { experience: this.experience, log });
@@ -150,13 +148,6 @@ export class Agent {
     this.heartbeatTimer = setInterval(() => {
       // Keep a shield in the off-hand whenever we own one.
       if (!this.executor.reflexRunning && bot.inventory.slots[45]?.name !== 'shield') equipShield(bot).catch(() => {});
-      // Remind the brain once per day, before dark, to sleep or wall in; most
-      // deaths in long runs were skeletons and zombies caught out at night.
-      const t = bot.time.timeOfDay;
-      if (t >= DUSK_START && t < DUSK_END && this.duskWarnedDay !== bot.time.day) {
-        this.duskWarnedDay = bot.time.day;
-        this.wake(`dusk is coming (timeOfDay ${t}); in a few minutes mobs spawn. Sleep in a bed, or wall yourself in, or at least get out of caves now`);
-      }
       if (process.memoryUsage().heapUsed > HEAP_LIMIT_BYTES && this.executor.goal && Date.now() - (this.lastHeapAbort ?? 0) > 30000) {
         this.lastHeapAbort = Date.now();
         const goal = this.executor.describe();
@@ -309,6 +300,21 @@ export class Agent {
       ...(records.length ? ['Records of the rules, skills and lessons involved:', ...records] : []),
       ask,
     ].join('\n');
+  }
+
+  // The lessons Jev is given: pinned ones first, then those that have helped
+  // most when followed, then the newest. Lessons improve, so Jev does too.
+  #jevLessons(n = 8) {
+    const net = (k) => {
+      const s = this.experience.score(`lesson:${k.id}`);
+      return s ? s.helped - s.hurt : 0;
+    };
+    return this.memory.knowledge.items
+      .filter((k) => k.pinned || /lesson|danger/.test(k.category))
+      .map((k, i) => ({ k, i }))
+      .sort((a, b) => (b.k.pinned ? 1 : 0) - (a.k.pinned ? 1 : 0) || net(b.k) - net(a.k) || b.i - a.i)
+      .slice(0, n)
+      .map(({ k }) => k.text);
   }
 
   #reflexContext(d) {

@@ -1,50 +1,57 @@
-// The fast decision layer. Every tick it looks at the immediate situation and
-// picks one bounded action: keep working on the brain's goal, or handle
-// something urgent (flee, fight, eat, defend, ...). It also decides whether
-// the situation is worth waking the brain for.
+// The fast decision layer, consulted every tick when none of the bot's own
+// reflex rules fired. It picks one bounded action: keep working on the brain's
+// goal, or handle something (flee, fight, eat, ...), and says whether the
+// situation is worth waking the brain for.
 //
-// Jev makes the call when a key is configured; otherwise a small utility
-// scorer does. Jev is only queried when there is a real choice to make, so a
-// quiet tick costs nothing.
+// Jev makes the call when a key is configured, guided by the bot's best
+// lessons; otherwise a small utility scorer does. Which actions are offered
+// depends only on what is possible right now, not on what we think is wise:
+// the bot's rules and lessons carry the strategy, and every choice made here
+// is recorded and scored like any other.
 
-import { hostilesNear, foodItems, bestWeapon, isRanged, hasShield } from './perception.js';
+import { hostilesNear, foodItems, bestWeapon } from './perception.js';
 
 export const ACTIONS = {
-  continue_goal: 'Keep working on the current goal from the planner. Right when nothing urgent is happening.',
-  flee: 'Run away from nearby threats. Right when outmatched: low health, no weapon, several hostiles, or a dangerous player.',
-  fight: 'Attack the nearest hostile mob. Right when it is close, the bot is healthy enough and fleeing would be worse. Against skeletons and other archers the bot advances behind its shield, so with a shield this beats fleeing.',
-  defend: 'Fight back against a player who is actively attacking the bot.',
-  eat: 'Eat food from the inventory. Right when hunger is low or health needs to regenerate and no enemy is in striking distance.',
-  face_player: 'Stop and look at a nearby player who is talking to the bot or approaching, so the planner can respond socially.',
+  continue_goal: 'Keep working on the current goal from the planner.',
+  flee: 'Sprint away from nearby hostile mobs and hostile players for a few seconds.',
+  fight: 'Attack the nearest hostile mob with the best weapon (raising a shield against archers if the bot has one).',
+  defend: 'Fight back against a player who recently hit the bot.',
+  eat: 'Eat the most filling food in the inventory.',
+  face_player: 'Stop and look at the nearest player, e.g. one who is talking to the bot.',
+  surface: 'Swim or dig straight up for air.',
+  retreat: 'Get away from close mobs, fight if cornered, eat, and wall in with dirt or cobblestone if it has some.',
+  wall_in: 'Build a 1x1 pod of dirt or cobblestone around the bot right where it stands.',
 };
 
 export class Reflexes {
-  constructor(bot, players, jev, log = () => {}) {
+  constructor(bot, players, jev, log = () => {}, lessons = () => []) {
     this.bot = bot;
     this.players = players;
     this.jev = jev;
     this.log = log;
+    this.lessons = lessons;
     this.lastJevError = 0;
   }
 
-  // Which actions are even possible right now.
-  candidates(state) {
+  // Which actions are possible right now.
+  candidates() {
+    const bot = this.bot;
     const c = ['continue_goal'];
-    const hostiles = hostilesNear(this.bot, 12);
+    const hostiles = hostilesNear(bot, 16);
     const attackers = this.players.nearby(10).filter((p) => p.attackedMeRecently);
-    // Running from archers just gets us shot in the back; only flee from them when hurt.
-    const fleeable = hostiles.some((h) => !isRanged(h.entity)) || (hostiles.length && this.bot.health <= 10);
-    if (fleeable || attackers.length || this.players.nearby(16).some((p) => p.relation === 'hostile')) c.push('flee');
-    const shield = hasShield(this.bot);
-    if (hostiles.some((h) => h.distance < 8 || (shield && isRanged(h.entity))) && this.bot.health > 8) c.push('fight');
+    const hostilePlayers = this.players.nearby(16).some((p) => p.relation === 'hostile');
+    if (hostiles.length || attackers.length || hostilePlayers) c.push('flee', 'retreat');
+    if (hostiles.length) c.push('fight');
     if (attackers.length) c.push('defend');
-    if (this.bot.food < 18 && foodItems(this.bot).length) c.push('eat');
+    if (bot.food < 20 && foodItems(bot).length) c.push('eat');
     if (this.players.nearby(6).some((p) => p.relation !== 'hostile')) c.push('face_player');
+    if (bot.entity.isInWater && (bot.oxygenLevel ?? 20) < 20) c.push('surface');
+    if (hostiles.length && bot.inventory.items().some((i) => /^(dirt|cobblestone|cobbled_deepslate)$/.test(i.name) && i.count >= 9)) c.push('wall_in');
     return c;
   }
 
   async decide(state) {
-    const options = this.candidates(state);
+    const options = this.candidates();
     if (options.length === 1) return { action: 'continue_goal', escalate: 0, threats: {}, source: 'trivial' };
 
     if (this.jev.enabled) {
@@ -61,11 +68,13 @@ export class Reflexes {
   }
 
   async #decideWithJev(state, options) {
+    const lessons = this.lessons();
     const questions = {
       action: {
         type: 'choice',
         instructions:
-          'You control the reflexes of a Minecraft survival bot in a multiplayer world. Given `health` (0-20), `food` (0-20), `hostiles`, `players` and `currentGoal`, choose the single best immediate action. Prefer continue_goal unless something needs handling now.',
+          'You control the reflexes of a Minecraft survival bot in a multiplayer world. Given `health` (0-20), `food` (0-20), `hostiles`, `players` and `currentGoal`, choose the single best immediate action. Prefer continue_goal unless something needs handling now.' +
+          (lessons.length ? ` The bot has learned: ${lessons.map((l) => `- ${l}`).join(' ')}` : ''),
         criteria: Object.fromEntries(options.map((o) => [o, ACTIONS[o]])),
       },
       escalate: {
@@ -106,6 +115,9 @@ export class Reflexes {
       defend: 0,
       eat: 0,
       face_player: 0,
+      surface: 0,
+      retreat: 0,
+      wall_in: 0,
     };
     if (options.includes('flee')) {
       const danger = hostiles.length * 0.2 + (hostiles.some((h) => h.name === 'creeper' && h.distance < 6) ? 0.6 : 0);
