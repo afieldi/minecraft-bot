@@ -55,7 +55,7 @@ await new Promise((r) => mock.listen(18080, r));
 
 Object.assign(process.env, {
   OPENROUTER_API_KEY: 'test', OPENROUTER_BASE_URL: 'http://127.0.0.1:18080',
-  MC_USERNAME: 'TestBot', MEMORY_DIR: MEM, BRAIN_CONTEXT_LIMIT: '12000', BRAIN_HEARTBEAT_SECONDS: '5',
+  MC_USERNAME: 'TestBot', MEMORY_DIR: MEM, BRAIN_HISTORY_WAKES: '3', BRAIN_HEARTBEAT_SECONDS: '5',
 });
 const { config } = await import('../src/config.js');
 const { Agent } = await import('../src/agent.js');

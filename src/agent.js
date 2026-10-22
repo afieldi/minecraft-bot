@@ -11,7 +11,7 @@ import { Reflexes } from './reflexes.js';
 import { JevClient } from './jev.js';
 import { Brain } from './brain.js';
 import { Arbiter } from './arbiter.js';
-import { Experience } from './experience.js';
+import { Experience, describeRecord } from './experience.js';
 import { RuleBook } from './rules.js';
 import { SkillLibrary, registerSkillGoals } from './skills.js';
 import { briefState, ruleState, reflexState, worldSnapshot } from './perception.js';
@@ -109,12 +109,19 @@ export class Agent {
     this.memory.log('spawned', { generation: this.memory.state.generation, pos: bot.entity.position });
     this.log(`spawned as ${bot.username} (brain generation ${this.memory.state.generation}, decisions by ${this.jev.enabled ? 'Jev' : 'utility fallback'})`);
 
-    this.executor.onGoalFinished = (r) => this.wake(`goal ${r.ok ? 'finished' : 'failed'}: ${r.message}`);
+    this.executor.onGoalFinished = (r) => {
+      if (r.ok) return this.wake(`goal finished: ${r.message}`);
+      // A failure is worth learning from when it cost something.
+      const costly = this.experience.recent(60000).some((x) => x.verdict === 'hurt' && x.kind === 'reflex');
+      this.wake(`goal failed: ${r.message}` + (costly ? `\n${this.#episode(60000, 'If this failure teaches something general, save it as a lesson, or fix the skill or rule involved.')}` : ''));
+    };
     this.players.onEvent((ev) => this.#onPlayerEvent(ev));
 
     bot.on('death', () => {
       this.memory.log('died', { pos: bot.entity.position });
-      this.wake('you died and respawned; your inventory was dropped where you died');
+      this.wake(`you died and respawned; your inventory was dropped where you died.\n${this.#episode(120000,
+        'Reflect before doing anything else: what would have prevented this death? Add or fix a reflex rule (save_rule) if a quicker reaction would have saved you, ' +
+        'save a lesson (remember, category lesson) if a different plan would have, and delete or fix any rule or skill above that made it worse.')}`);
     });
     bot.on('sleep', () => this.memory.log('fell_asleep'));
     bot.on('wake', () => {
@@ -281,6 +288,24 @@ export class Agent {
       this.behaviourWoke.set(pick.behaviour, Date.now());
       this.wake(pick.wake);
     }
+  }
+
+  // What happened recently, decision by decision, with the record of each
+  // rule, skill or lesson involved: the material for reflection.
+  #episode(ms, ask) {
+    const recs = this.experience.recent(ms).slice(-25);
+    if (!recs.length) return ask;
+    const sources = [...new Set(recs.flatMap((r) => [r.source, ...r.cites]))].filter((k) => /^(rule|skill|lesson):/.test(k));
+    const records = sources.map((k) => {
+      const s = this.experience.score(k);
+      return `- ${k}: used ${s.uses}x, ${s.helped} helped, ${s.hurt} hurt, ${s.deaths} deaths`;
+    });
+    return [
+      `What happened (last ${Math.round(ms / 1000)}s, oldest first; [source] decision -> verdict):`,
+      ...recs.map((r) => '- ' + describeRecord(r)),
+      ...(records.length ? ['Records of the rules, skills and lessons involved:', ...records] : []),
+      ask,
+    ].join('\n');
   }
 
   #reflexContext(d) {
