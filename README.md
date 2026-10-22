@@ -75,6 +75,15 @@ For an online-mode server, set `MC_AUTH=microsoft` and the bot's Microsoft accou
 
 Get a key at [openrouter.ai/keys](https://openrouter.ai/keys). The brain defaults to `deepseek/deepseek-v4.1-flash` at `medium` effort. `BRAIN_MODEL` can be any OpenRouter model that supports tool calling, for example `anthropic/claude-opus-5.5` for stronger planning at a higher cost. Jev defaults to `~typesafe/jev-latest`. To call TypeSafe directly instead of through OpenRouter, set `JEV_API_KEY` and `JEV_BASE_URL=https://api.typesafe.ai`.
 
+## Is it learning?
+
+`npm run generations -- --generations 3` runs the same scenarios several times on a local server and keeps the bot's learned data between runs, with no code changes in between. If later generations die less and pass more scenarios, the loop works.
+
+- Scenarios: `night_skeletons` (dusk, three skeletons), `flooded_pit` (start at the bottom of a sealed, flooded shaft), `hurt_with_zombies` (8 health at night, two zombies), `first_day` (empty-handed at dawn; passes with a pickaxe and no death).
+- It needs an op'd `Director` account to set the scenes: run `./cmd.sh "op Director"` on the server once.
+- Learned data goes to `./data-generations/` (delete it to start over). Results go to `generations.jsonl` and `generations-report.md` there.
+- One generation takes about 13 minutes and spends brain and Jev credit; each run's cost is in the report. `--only flooded_pit,night_skeletons` runs a subset.
+
 ## Tests
 
 - `npm test` runs offline tests with a simulated bot: player tracking, attack attribution, the Jev request and fallback, chest storage and ownership rules, smelting, the skill interpreter and the starter farming skill.
