@@ -1,0 +1,34 @@
+{
+  "description": "Seal yourself in where you stand: a 5x5 hut with a roof if you carry 50+ blocks (and args.pod isn't set), otherwise a 1x1 pod (10 blocks: walls, a block to hang the roof on, the roof). args: block? (material; default the building block you have most of), pod? (force the small pod). You dig out when the next goal moves you. Saves the spot as 'shelter'.",
+  "steps": [
+    {"set": "candidates", "value": {"where": [["cobblestone", "cobbled_deepslate", "dirt", "stone", "andesite", "diorite", "granite", "netherrack", "sandstone"], {"gte": [{"inv": "$it"}, 10]}]}},
+    {"set": "mat", "value": {"default": ["$args.block", {"first": "$candidates"}]}},
+    {"if": {"eq": ["$mat", null]}, "then": [{"fail": "no building blocks: need 9+ dirt or cobblestone"}]},
+    {"set": "have", "value": {"inv": "$mat"}},
+    {"if": {"lt": ["$have", 10]}, "then": [{"fail": {"add": ["need at least 10 ", "$mat"]}}]},
+    {"set": "hut", "value": {"and": [{"gte": ["$have", 50]}, {"not": "$args.pod"}]}},
+    {"do": "center", "as": "here"},
+    {"set": "blocks", "value": []},
+    {"if": "$hut",
+     "then": [
+       {"forEach": [-2, -1, 0, 1, 2], "as": "dx", "steps": [
+         {"forEach": [-2, -1, 0, 1, 2], "as": "dz", "steps": [
+           {"if": {"or": [{"in": ["$dx", [-2, 2]]}, {"in": ["$dz", [-2, 2]]}]},
+            "then": [{"set": "blocks", "value": {"add": ["$blocks", [["$dx", 0, "$dz", "$mat"], ["$dx", 1, "$dz", "$mat"]]]}}]},
+           {"set": "blocks", "value": {"add": ["$blocks", [["$dx", 2, "$dz", "$mat"]]]}}
+         ]}
+       ]}
+     ],
+     "else": [
+       {"set": "blocks", "value": [[1, 0, 0, "$mat"], [1, 1, 0, "$mat"], [-1, 0, 0, "$mat"], [-1, 1, 0, "$mat"], [0, 0, 1, "$mat"], [0, 1, 1, "$mat"], [0, 0, -1, "$mat"], [0, 1, -1, "$mat"], [1, 2, 0, "$mat"], [0, 2, 0, "$mat"]]}
+     ]},
+    {"if": {"lt": ["$have", {"len": "$blocks"}]}, "then": [{"fail": {"add": [{"add": ["not enough ", "$mat"]}, " for the hut"]}}]},
+    {"repeat": 1, "steps": [
+      {"do": "moveTo", "args": {"pos": "$here", "range": 0}},
+      {"do": "center"},
+      {"do": "goal", "args": {"type": "build", "args": {"blocks": "$blocks", "origin": "$here"}}, "as": "built"}
+    ]},
+    {"do": "saveLocation", "args": {"name": "shelter", "note": {"add": [{"add": [{"add": ["$mat", " "]}, {"len": "$blocks"}]}, " blocks"]}}},
+    {"return": "$built"}
+  ]
+}

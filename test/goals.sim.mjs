@@ -1,4 +1,4 @@
-// Runs the shelter, build, store and retrieve goals on a local server
+// Runs the shelter skill and the build, store and retrieve goals on a local server
 // (flying-squid 1.16.5). Usage: MC_PORT=25599 MC_VERSION=1.16.5 node test/goals.sim.mjs
 import fs from 'node:fs';
 const MEM = '/tmp/claude-0/mcgoals';
@@ -27,7 +27,7 @@ async function run(goal) {
 }
 
 const start = bot.entity.position.floored();
-const shelter = await run({ type: 'shelter' });
+const shelter = await run({ type: 'skill', name: 'shelter' });
 const around = [[2, 0, 0], [-2, 1, 0], [0, 0, 2], [0, 2, 0], [1, 2, 1], [0, 1, -2]].map(([x, y, z]) => bot.blockAt(start.offset(x, y, z))?.name);
 console.log('shelter blocks sample', around);
 await run({ type: 'explore', distance: 10 }); // must dig out of the hut

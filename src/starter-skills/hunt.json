@@ -1,0 +1,31 @@
+{
+  "description": "Kill nearby food animals and pick up the meat until you carry args.count (default 6) more food. Explores a little when none are around. Cook raw meat with the smelt goal afterwards.",
+  "steps": [
+    {"set": "want", "value": {"default": ["$args.count", 6]}},
+    {"set": "animals", "value": ["cow", "pig", "sheep", "chicken", "rabbit", "mooshroom", "goat"]},
+    {"do": "foodStock", "as": "start"},
+    {"set": "now", "value": "$start"},
+    {"set": "kills", "value": 0},
+    {"set": "searches", "value": 0},
+    {"while": {"and": [{"lt": [{"sub": ["$now", "$start"]}, "$want"]}, {"lte": ["$searches", 3]}]}, "max": 16, "steps": [
+      {"do": "nearby", "args": {"maxDistance": 48}, "as": "around"},
+      {"set": "prey", "value": {"first": {"where": ["$around", {"in": ["$it.name", "$animals"]}]}}},
+      {"if": {"eq": ["$prey", null]},
+       "then": [
+         {"set": "searches", "value": {"add": ["$searches", 1]}},
+         {"try": [{"do": "goal", "args": {"type": "explore", "args": {"distance": 40}}}], "catch": [{"log": "$error"}]}
+       ],
+       "else": [
+         {"try": [
+           {"do": "attack", "args": {"target": "$prey.name"}},
+           {"set": "kills", "value": {"add": ["$kills", 1]}},
+           {"do": "collectDrops", "args": {"maxDistance": 8}}
+         ], "catch": [{"log": "$error"}]}
+       ]},
+      {"do": "foodStock", "as": "now"}
+    ]},
+    {"set": "got", "value": {"sub": ["$now", "$start"]}},
+    {"if": {"lte": ["$got", 0]}, "then": [{"fail": {"add": [{"add": ["got no food after ", "$kills"]}, " kills; no animals found nearby even after exploring"]}}]},
+    {"return": {"add": [{"add": [{"add": ["hunted for ", "$got"]}, " food in "]}, {"add": ["$kills", " kills (cook raw meat with smelt)"]}]}}
+  ]
+}
