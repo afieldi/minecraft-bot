@@ -98,7 +98,9 @@ export class Agent {
     this.arbiter = new Arbiter();
     this.arbiter.addProvider(() => this.rules.behaviours());
     this.lastEscalation = 0;
-    this.lastWake = 0;
+    // holdFirstWake: whoever started us wakes the brain itself (the
+    // generations harness does, once the scene is set).
+    this.lastWake = this.holdFirstWake ? Date.now() : 0;
     this.threatAlerted = new Map();
     this.behaviourWoke = new Map();
 
@@ -138,7 +140,7 @@ export class Agent {
       this.experience.goalStarted(goal, { source: goal.type === 'skill' ? `skill:${goal.name}` : 'brain', reason: 'resumed after reconnecting', state: briefState(bot) });
       this.executor.setGoal(goal);
     }
-    this.wake(this.memory.state.generation === 1 ? 'you just joined the world for the first time' : 'you just reconnected');
+    if (!this.holdFirstWake) this.wake(this.memory.state.generation === 1 ? 'you just joined the world for the first time' : 'you just reconnected');
 
     this.reflexTimer = setInterval(() => this.#tick(), this.cfg.reflexIntervalMs);
     this.statsTimer = setInterval(() => {
