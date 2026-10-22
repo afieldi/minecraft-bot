@@ -171,7 +171,8 @@ export class Agent {
       return;
     }
     this.lastWake = Date.now();
-    this.brain.wake(reason, worldSnapshot(this.bot, this.players, this.executor));
+    // Snapshot lazily: a queued wake-up must see the world when the brain thinks.
+    this.brain.wake(reason, () => worldSnapshot(this.bot, this.players, this.executor));
   }
 
   #onPlayerEvent(ev) {

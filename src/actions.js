@@ -89,9 +89,13 @@ export class Executor {
         this.goal = null;
         this.memory.state.goal = null;
         this.memory.saveState();
-        this.onGoalFinished(this.lastResult);
-        for (const w of this.waiters.filter((w) => w.goal === goal)) w.resolve(this.lastResult);
+        // If the brain is waiting on this goal (run_steps) it gets the result
+        // directly; a second "goal finished" wake-up arrived later with a stale
+        // view and made it think its next goal had been wiped.
+        const waiting = this.waiters.filter((w) => w.goal === goal);
+        for (const w of waiting) w.resolve(this.lastResult);
         this.waiters = this.waiters.filter((w) => w.goal !== goal);
+        if (!waiting.length) this.onGoalFinished(this.lastResult);
       });
   }
 
