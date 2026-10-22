@@ -3,7 +3,7 @@
 // once the reflex finishes.
 import pathfinderPkg from 'mineflayer-pathfinder';
 import { Vec3 } from 'vec3';
-import { hostilesNear, foodItems, bestWeapon } from './perception.js';
+import { hostilesNear, foodItems, bestWeapon, foodStock, armorPieces } from './perception.js';
 
 const { goals } = pathfinderPkg;
 
@@ -18,6 +18,7 @@ export const GOAL_TYPES = {
   give: '{ player, item, count? } - walk to a player and drop items for them',
   equip: '{ item } - hold an item, or wear it if it is armor',
   eat: '{} - eat something',
+  hunt: '{ count?=6 } - kill nearby food animals (cow, pig, sheep, chicken, ...) and pick up the meat; explores a little if none are around. Cook raw meat with smelt',
   sleep: '{} - find or place a bed and sleep (only works at night)',
   smelt: '{ input, count?, fuel? } - smelt or cook in a furnace, e.g. raw_iron, beef, sand; places a furnace if needed',
   store: '{ items?, keep? } - put items in one of your own chests (placing one if you carry it). items: names to store (default: everything except tools, weapons, armor, food and the names in keep)',
@@ -179,6 +180,15 @@ async function slowClicks(bot, fn, ms = 120) {
   }
 }
 
+async function pickUpDrops(bot, around, check, radius = 6) {
+  await sleep(400); // drops spawn a moment after the kill
+  const drops = Object.values(bot.entities).filter((e) => e.name === 'item' && e.position.distanceTo(around) <= radius);
+  for (const d of drops) {
+    if (!d.isValid) continue;
+    await moveTo(bot, new goals.GoalNear(d.position.x, d.position.y, d.position.z, 0), check).catch(() => check());
+  }
+}
+
 // Walk to the middle of the block we're standing in. The pathfinder stops up
 // to 0.35 off-centre, which leaves our body overlapping a neighbouring cell.
 export async function centerInBlock(bot, check) {
@@ -246,6 +256,14 @@ const KEEP_DEFAULT = /(_sword|_pickaxe|_axe|_shovel|_hoe|_helmet|_chestplate|_le
 const BUILD_BLOCKS = ['cobblestone', 'cobbled_deepslate', 'dirt', 'stone', 'andesite', 'diorite', 'granite', 'netherrack', 'sandstone'];
 const FUEL_VALUE = { coal: 8, charcoal: 8, coal_block: 80, blaze_rod: 12, lava_bucket: 100 };
 const fuelValue = (name) => FUEL_VALUE[name] ?? (/_planks$/.test(name) || /_log$/.test(name) || /_wood$/.test(name) ? 1.5 : /stick$/.test(name) ? 0.5 : 0);
+
+// Deep caves at low gear were the main cause of death in long runs, so
+// collect won't chase blocks below DEEP_Y without some armor and food.
+const DEEP_Y = 20;
+const DEPTH_MIN_ARMOR = 2;
+const DEPTH_MIN_FOOD = 4;
+const readyForDepth = (bot) => armorPieces(bot) >= DEPTH_MIN_ARMOR && foodStock(bot) >= DEPTH_MIN_FOOD;
+const FOOD_ANIMALS = ['cow', 'pig', 'sheep', 'chicken', 'rabbit', 'mooshroom', 'goat'];
 
 const isSolid = (b) => b && b.boundingBox === 'block';
 const isAirLike = (b) => b && (b.name === 'air' || b.name === 'cave_air' || b.name === 'water' || b.boundingBox === 'empty');
@@ -403,10 +421,14 @@ export const GOALS = {
     const have = () => countItem(bot, (i) => dropNames.has(i.name) || i.name.includes(block));
     const start = have();
     for (let round = 0; round < 12 && have() - start < count; round++) {
-      const positions = bot.findBlocks({ matching: ids, maxDistance: 64, count: Math.min(4, count - (have() - start)) });
+      const want = Math.min(4, count - (have() - start));
+      const found = bot.findBlocks({ matching: ids, maxDistance: 64, count: want * 8 });
+      const shallowOnly = /overworld/.test(bot.game.dimension) && !readyForDepth(bot);
+      const positions = (shallowOnly ? found.filter((p) => p.y >= DEEP_Y) : found).slice(0, want);
       if (!positions.length) {
-        if (round === 0) throw new Error(`no ${block} within 64 blocks; try exploring first`);
-        break;
+        if (round > 0) break;
+        if (found.length) throw new Error(`the nearest ${block} is below y=${DEEP_Y}; only go that deep with ${DEPTH_MIN_ARMOR}+ armor pieces and ${DEPTH_MIN_FOOD}+ food`);
+        throw new Error(`no ${block} within 64 blocks; try exploring first`);
       }
       const targets = positions.map((p) => bot.blockAt(p)).filter(Boolean);
       try {
@@ -468,6 +490,34 @@ export const GOALS = {
     while (ent.isValid && Date.now() < end) { await sleep(500); check(); }
     bot.pvp.stop();
     return ent.isValid ? `gave up attacking ${target}` : `defeated ${target}`;
+  },
+
+  async hunt(bot, { count = 6, maxDistance = 48 }, { check }) {
+    const start = foodStock(bot);
+    let kills = 0;
+    let searches = 0;
+    for (let tries = 0; tries < 16 && foodStock(bot) - start < count; tries++) {
+      const me = bot.entity.position;
+      const prey = bot.nearestEntity((e) => FOOD_ANIMALS.includes(e.name) && e.position.distanceTo(me) <= maxDistance && Math.abs(e.position.y - me.y) < 8);
+      if (!prey) {
+        if (++searches > 3) break;
+        await GOALS.explore(bot, { distance: 40 }, { check }).catch((err) => { check(); if (searches > 3) throw err; });
+        continue;
+      }
+      const weapon = bestWeapon(bot);
+      if (weapon) await bot.equip(weapon, 'hand');
+      bot.pvp.attack(prey);
+      const end = Date.now() + 30000;
+      while (prey.isValid && Date.now() < end) { await sleep(300); check(); }
+      bot.pvp.stop();
+      if (!prey.isValid) {
+        kills++;
+        await pickUpDrops(bot, prey.position, check);
+      }
+    }
+    const got = foodStock(bot) - start;
+    if (got <= 0) throw new Error(kills ? `killed ${kills} animals but picked up no food` : 'no food animals found, even after exploring; try fishing spots, crops or another direction');
+    return `hunted ${kills} animals for ${got} food (cook raw meat with smelt)`;
   },
 
   async give(bot, { player, item, count }, { check }) {
@@ -710,6 +760,28 @@ export const REFLEXES = {
     foods.sort((a, b) => (registry[b.name]?.foodPoints ?? 0) - (registry[a.name]?.foodPoints ?? 0));
     await bot.equip(foods[0], 'hand');
     await bot.consume();
+  },
+
+  // Forced by the body at low health, ahead of Jev and the brain. Fleeing
+  // doesn't shake a mob that chases us, and building with one hitting us is
+  // fatal, so: flee, fight back if still cornered, wall in once clear, eat.
+  async retreat(bot, { memory }) {
+    if (hostilesNear(bot, 8).length) await REFLEXES.flee(bot, {});
+    const close = hostilesNear(bot, 5)[0]?.entity;
+    if (close) {
+      const weapon = bestWeapon(bot);
+      if (weapon) await bot.equip(weapon, 'hand').catch(() => {});
+      bot.pvp.attack(close);
+      const end = Date.now() + 12000;
+      while (close.isValid && Date.now() < end && bot.health > 2) await sleep(300);
+      bot.pvp.stop();
+    }
+    if (bot.food < 20 && foodItems(bot).length) await REFLEXES.eat(bot).catch(() => {});
+    const material = pickBuildBlock(bot);
+    if (!hostilesNear(bot, 6).length && material && countItem(bot, (i) => i.name === material) >= 9) {
+      await GOALS.shelter(bot, { block: material }, { check: () => {}, memory }).catch(() => {});
+    }
+    if (bot.food < 20 && foodItems(bot).length) await REFLEXES.eat(bot).catch(() => {});
   },
 
   async face_player(bot, { player }) {

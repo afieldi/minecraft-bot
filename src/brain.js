@@ -41,7 +41,12 @@ Chests and builds:
 - Before night, sleep in a bed if you have one; otherwise use the shelter goal.
 - Caves and mines are far more dangerous at night. As dusk approaches (timeOfDay around 11500), stop deep mining: come back to the surface or wall yourself into a sealed shelter before it gets dark, and don't keep fighting underground when your health is low.
 
-Survival priorities when nothing else is going on: get wood, make tools, find food, build or find shelter before night, sleep in a bed at night, then work towards iron, armor and a base.`;
+Food, health and depth:
+- Keep at least 8 food in your inventory (foodStock in the observation). Use the hunt goal while animals are around, cook the meat with smelt, and once you find wheat seeds start a wheat field (the start_wheat_field skill) so you never run out.
+- When your health drops to 8 or below, your body retreats, walls in and eats on its own and tells you. Let it recover to at least 14 before mining or fighting again.
+- The body won't mine below y=20 until you have 2+ armor pieces and 4+ food. Get those first; iron is common above y=20 too.
+
+Survival priorities when nothing else is going on: get wood, make tools, hunt and cook food, build or find shelter before night, sleep in a bed at night, then work towards iron, armor and a base.`;
 
 const TOOLS = [
   {

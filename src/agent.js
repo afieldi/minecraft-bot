@@ -19,6 +19,9 @@ const THREAT_ALERT = 0.75;
 // Jev sometimes picks flee/fight with very low confidence; acting on those
 // makes the bot abandon its goal over nothing.
 const MIN_REFLEX_CONFIDENCE = 0.3;
+// Below this the body retreats on its own; the brain is too slow to react in time.
+const LOW_HEALTH = 8;
+const RETREAT_COOLDOWN_MS = 20000;
 // The server's player hitbox is 0.6 wide as a float (0.60000002), so a body
 // that stops exactly flush with a block (as prismarine-physics does at 0.3
 // half-width) overlaps it by ~1e-8 there. Paper treats that as clipping into
@@ -181,6 +184,15 @@ export class Agent {
     this.ticking = true;
     try {
       this.players.update();
+      if (this.bot.health <= LOW_HEALTH && !this.executor.reflexRunning && Date.now() - (this.lastRetreat ?? 0) > RETREAT_COOLDOWN_MS) {
+        this.lastRetreat = Date.now();
+        this.log(`reflex: retreat (health ${this.bot.health.toFixed(1)})`);
+        this.executor.reflex('retreat', { memory: this.memory });
+        // Don't resume whatever got us hurt (e.g. a deep mine) once the reflex ends.
+        this.executor.setGoal({ type: 'idle', seconds: 30 });
+        this.wake(`your health is low (${this.bot.health.toFixed(1)}/20); your body is retreating, walling in and eating. Recover before doing anything risky`);
+        return;
+      }
       const state = reflexState(this.bot, this.players, this.executor);
       const d = await this.reflexes.decide(state);
 

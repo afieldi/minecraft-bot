@@ -34,6 +34,14 @@ export function foodItems(bot) {
   return bot.inventory.items().filter((i) => foods[i.name] && !['rotten_flesh', 'spider_eye', 'poisonous_potato', 'pufferfish'].includes(i.name));
 }
 
+export function foodStock(bot) {
+  return foodItems(bot).reduce((n, i) => n + i.count, 0);
+}
+
+export function armorPieces(bot) {
+  return [5, 6, 7, 8].filter((s) => bot.inventory.slots[s]).length;
+}
+
 export function bestWeapon(bot) {
   const order = ['netherite_sword', 'diamond_sword', 'iron_sword', 'stone_sword', 'golden_sword', 'wooden_sword',
     'netherite_axe', 'diamond_axe', 'iron_axe', 'stone_axe', 'wooden_axe'];
@@ -70,7 +78,7 @@ export function reflexState(bot, players, executor) {
     inWater: bot.entity.isInWater,
     hasFood: foodItems(bot).length > 0,
     weapon: bestWeapon(bot)?.name ?? 'none',
-    armorPieces: [5, 6, 7, 8].filter((s) => bot.inventory.slots[s]).length,
+    armorPieces: armorPieces(bot),
     currentGoal: executor.describe(),
     hostiles: hostiles.slice(0, 5).map(({ name, distance }) => ({ name, distance })),
     players: nearPlayers.slice(0, 5).map(({ entity, ...rest }) => rest),
@@ -108,6 +116,8 @@ export function worldSnapshot(bot, players, executor) {
     raining: bot.isRaining,
     holding: bot.heldItem?.name ?? null,
     inventory: inventorySummary(bot),
+    foodStock: foodStock(bot),
+    armorPieces: armorPieces(bot),
     currentGoal: executor.describe(),
     lastGoalResult: executor.lastResult,
     hostilesNearby: hostilesNear(bot, 24).slice(0, 8).map(({ name, distance }) => ({ name, distance })),
