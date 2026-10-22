@@ -6,12 +6,12 @@ import pvpPkg from 'mineflayer-pvp';
 import collectBlockPkg from 'mineflayer-collectblock';
 import { Memory } from './memory.js';
 import { PlayerTracker } from './players.js';
-import { Executor } from './actions.js';
+import { Executor, equipShield } from './actions.js';
 import { Reflexes } from './reflexes.js';
 import { JevClient } from './jev.js';
 import { Brain } from './brain.js';
 import { SkillLibrary, registerSkillGoals } from './skills.js';
-import { reflexState, worldSnapshot, hostilesNear, foodItems } from './perception.js';
+import { reflexState, worldSnapshot, hostilesNear, foodItems, isRanged, hasShield, bestWeapon } from './perception.js';
 
 const { pathfinder, Movements } = pathfinderPkg;
 const ESCALATE_COOLDOWN_MS = 20000;
@@ -21,6 +21,8 @@ const THREAT_ALERT = 0.75;
 const MIN_REFLEX_CONFIDENCE = 0.3;
 // Below this the body retreats on its own; the brain is too slow to react in time.
 const LOW_HEALTH = 8;
+const DUSK_START = 11500;
+const DUSK_END = 13000;
 const LOW_AIR = 14; // of 20 bubbles; digging out of a flooded pit takes a while
 const RETREAT_COOLDOWN_MS = 20000;
 // Pathfinding inside collectBlock can run away (e.g. a tool breaks mid-goal)
@@ -103,6 +105,7 @@ export class Agent {
     this.executor.onGoalFinished = (r) => this.wake(`goal ${r.ok ? 'finished' : 'failed'}: ${r.message}`);
     this.players.onEvent((ev) => this.#onPlayerEvent(ev));
 
+    bot.on('entityHurt', (e) => { if (e === bot.entity) this.lastHurtAt = Date.now(); });
     bot.on('death', () => {
       this.memory.log('died', { pos: bot.entity.position });
       this.wake('you died and respawned; your inventory was dropped where you died');
@@ -123,6 +126,15 @@ export class Agent {
 
     this.reflexTimer = setInterval(() => this.#tick(), this.cfg.reflexIntervalMs);
     this.heartbeatTimer = setInterval(() => {
+      // Keep a shield in the off-hand whenever we own one.
+      if (!this.executor.reflexRunning && bot.inventory.slots[45]?.name !== 'shield') equipShield(bot).catch(() => {});
+      // Remind the brain once per day, before dark, to sleep or wall in; most
+      // deaths in long runs were skeletons and zombies caught out at night.
+      const t = bot.time.timeOfDay;
+      if (t >= DUSK_START && t < DUSK_END && this.duskWarnedDay !== bot.time.day) {
+        this.duskWarnedDay = bot.time.day;
+        this.wake(`dusk is coming (timeOfDay ${t}); in a few minutes mobs spawn. Sleep in a bed, or wall yourself in, or at least get out of caves now`);
+      }
       if (process.memoryUsage().heapUsed > HEAP_LIMIT_BYTES && this.executor.goal && Date.now() - (this.lastHeapAbort ?? 0) > 30000) {
         this.lastHeapAbort = Date.now();
         const goal = this.executor.describe();
@@ -209,6 +221,16 @@ export class Agent {
           this.lastAirWake = Date.now();
           this.wake(`you were drowning (air ${this.bot.oxygenLevel}/20); your body swam for air. Don't go back through that water, even for dropped items`);
         }
+        return;
+      }
+      // Being shot: Jev tended to keep "continue_goal" while a skeleton picked
+      // us apart. Engage behind the shield (or while still healthy), otherwise
+      // wall in to break line of sight.
+      const archer = hostilesNear(this.bot, 16).find((h) => isRanged(h.entity));
+      if (archer && Date.now() - (this.lastHurtAt ?? 0) < 1500 && !this.executor.reflexRunning) {
+        const engage = bestWeapon(this.bot) && (hasShield(this.bot) || this.bot.health > 12);
+        this.log(`reflex: ${engage ? 'fight' : 'retreat'} (shot by ${archer.name}, health ${this.bot.health.toFixed(1)})`);
+        this.executor.reflex(engage ? 'fight' : 'retreat', { memory: this.memory });
         return;
       }
       // Only take over when retreating helps: something is near, or there's food

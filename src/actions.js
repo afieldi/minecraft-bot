@@ -3,7 +3,7 @@
 // once the reflex finishes.
 import pathfinderPkg from 'mineflayer-pathfinder';
 import { Vec3 } from 'vec3';
-import { hostilesNear, foodItems, bestWeapon, foodStock, armorPieces } from './perception.js';
+import { hostilesNear, foodItems, bestWeapon, foodStock, armorPieces, isRanged, hasShield } from './perception.js';
 
 const { goals } = pathfinderPkg;
 
@@ -190,6 +190,40 @@ async function pickUpDrops(bot, around, check, radius = 6) {
   for (const d of drops) {
     if (!d.isValid) continue;
     await moveTo(bot, new goals.GoalNear(d.position.x, d.position.y, d.position.z, 0), check).catch(() => check());
+  }
+}
+
+export async function equipShield(bot) {
+  if (bot.inventory.slots[45]?.name === 'shield') return true;
+  const shield = bot.inventory.items().find((i) => i.name === 'shield');
+  if (!shield) return false;
+  await bot.equip(shield, 'off-hand').catch(() => {});
+  return bot.inventory.slots[45]?.name === 'shield';
+}
+
+// Against archers: close in with the shield raised (it blocks arrows from the
+// front, and we face the target while walking at it), lower it to swing.
+async function shieldFight(bot, target, until) {
+  const weapon = bestWeapon(bot);
+  if (weapon) await bot.equip(weapon, 'hand').catch(() => {});
+  await equipShield(bot);
+  bot.pathfinder.setGoal(new goals.GoalFollow(target, 2), true);
+  let blocking = false;
+  try {
+    while (target.isValid && Date.now() < until && bot.health > 4) {
+      if (target.position.distanceTo(bot.entity.position) <= 3) {
+        if (blocking) { bot.deactivateItem(); blocking = false; }
+        await bot.lookAt(target.position.offset(0, (target.height ?? 1.8) * 0.8, 0), true);
+        bot.attack(target);
+        await sleep(650); // sword cooldown
+      } else {
+        if (!blocking) { bot.activateItem(true); blocking = true; }
+        await sleep(200);
+      }
+    }
+  } finally {
+    if (blocking) bot.deactivateItem();
+    bot.pathfinder.setGoal(null);
   }
 }
 
@@ -771,8 +805,9 @@ export const REFLEXES = {
   },
 
   async fight(bot) {
-    const target = hostilesNear(bot, 10)[0]?.entity;
+    const target = hostilesNear(bot, 16)[0]?.entity;
     if (!target) return;
+    if (isRanged(target) && hasShield(bot)) return shieldFight(bot, target, Date.now() + 20000);
     const weapon = bestWeapon(bot);
     if (weapon) await bot.equip(weapon, 'hand');
     bot.pvp.attack(target);
