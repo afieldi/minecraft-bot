@@ -1,0 +1,12 @@
+{
+  "id": "archer_engage",
+  "description": "Being shot by an archer with a weapon and a shield (or plenty of health): close in and fight",
+  "when": {"and": [
+    {"lt": ["$hurtSecondsAgo", 1.5]},
+    {"any": ["$hostiles", "$it.ranged"]},
+    {"ne": ["$weapon", null]},
+    {"or": ["$hasShield", {"gt": ["$health", 12]}]}
+  ]},
+  "do": "fight",
+  "priority": 90
+}
