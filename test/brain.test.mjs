@@ -91,5 +91,21 @@ assert.equal(memory.state.generation, gen + 1);
 assert.equal(brain.history.length, 0);
 assert.match(fs.readFileSync(`${dir}/T/handoffs.md`, 'utf8'), /flee creepers/);
 
+// A failed trial run gives the body back to the goal it interrupted.
+executor.setGoal({ type: 'idle', seconds: 30 });
+script = [[['run_steps', { steps: [{ do: 'no_such_action' }] }]], []];
+brain.wake('try something', {});
+await idle();
+assert.match(requests.at(-1).messages.at(-1).content, /resumed your previous goal: idle/);
+assert.equal(executor.goal?.type, 'idle');
+
+// A stopped brain (its bot disconnected) makes no more calls.
+const before = requests.length;
+script = [[['set_goal', { type: 'idle', args: { seconds: 1 } }]], []];
+brain.stop();
+brain.wake('after the bot left', {});
+await idle();
+assert.equal(requests.length, before);
+
 console.log('brain.test: all assertions passed');
 process.exit(0);

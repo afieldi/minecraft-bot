@@ -190,6 +190,8 @@ export class Agent {
   }
 
   #teardown() {
+    // The brain belongs to this connection; a reconnect makes a new one.
+    this.brain?.stop();
     clearInterval(this.reflexTimer);
     clearInterval(this.heartbeatTimer);
     clearInterval(this.statsTimer);
