@@ -21,6 +21,7 @@ export const GOAL_TYPES = {
   hunt: '{ count?=6 } - kill nearby food animals (cow, pig, sheep, chicken, ...) and pick up the meat; explores a little if none are around. Cook raw meat with smelt',
   sleep: '{} - find or place a bed and sleep (only works at night)',
   smelt: '{ input, count?, fuel? } - smelt or cook in a furnace, e.g. raw_iron, beef, sand; places a furnace if needed',
+  toss: '{ item, count? } - drop items you do not need (e.g. leaf_litter, dirt, gravel) to free inventory space',
   store: '{ items?, keep? } - put items in one of your own chests (placing one if you carry it). items: names to store (default: everything except tools, weapons, armor, food and the names in keep)',
   retrieve: '{ item, count? } - take items back out of your own or shared chests',
   build: '{ blocks: [[dx, dy, dz, block], ...], origin? } - place blocks relative to origin {x,y,z} (default: where you stand). Max 200 blocks',
@@ -170,6 +171,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // with the server on 1.21.11, so it loses track of the cursor stack and puts
 // ingredients in the wrong slots (a pickaxe comes out as nothing). Pausing
 // after each click lets the server's slot updates land first.
+const INVENTORY_FULL = 'inventory full';
+function inventoryFullMessage(bot) {
+  const counts = {};
+  for (const i of bot.inventory.items()) counts[i.name] = (counts[i.name] ?? 0) + i.count;
+  const junk = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([n, c]) => `${c} ${n}`).join(', ');
+  return `my inventory is full (most: ${junk}); store items in my chest or toss junk (toss goal) before collecting more`;
+}
+
 async function slowClicks(bot, fn, ms = 120) {
   const original = bot.clickWindow;
   bot.clickWindow = async (...args) => {
@@ -502,9 +511,13 @@ export const GOALS = {
       }
       const targets = positions.map((p) => bot.blockAt(p)).filter(Boolean);
       try {
+        if (bot.inventory.emptySlotCount() === 0) throw new Error(INVENTORY_FULL);
         await bot.collectBlock.collect(targets, { ignoreNoPath: true });
       } catch (err) {
         check();
+        // collectBlock wants to dump into a chest when the inventory is full
+        // and reports it as "There are no defined chest locations!".
+        if (err.message === INVENTORY_FULL || /chest locations/.test(err.message)) throw new Error(inventoryFullMessage(bot));
         if (round > 3) throw err;
       }
       check();
@@ -541,7 +554,14 @@ export const GOALS = {
       check();
       const r = i === 0 ? recipe : bot.recipesFor(target.id, null, 1, table)[0];
       if (!r) break;
+      const got = countItem(bot, (it) => it.name === item);
       await slowClicks(bot, () => bot.craft(r, 1, table ?? undefined));
+      await sleep(250);
+      if (countItem(bot, (it) => it.name === item) <= got) {
+        // Still lost track of the grid occasionally at 120ms; try once more, slower.
+        const again = bot.recipesFor(target.id, null, 1, table)[0];
+        if (again) await slowClicks(bot, () => bot.craft(again, 1, table ?? undefined), 300);
+      }
       await sleep(250);
     }
     // bot.craft doesn't notice when the server produced nothing, so count.
@@ -588,6 +608,19 @@ export const GOALS = {
     const got = foodStock(bot) - start;
     if (got <= 0) throw new Error(kills ? `killed ${kills} animals but picked up no food` : 'no food animals found, even after exploring; try fishing spots, crops or another direction');
     return `hunted ${kills} animals for ${got} food (cook raw meat with smelt)`;
+  },
+
+  async toss(bot, { item, count }) {
+    const total = countItem(bot, (i) => i.name === item);
+    if (!total) throw new Error(`I have no ${item}`);
+    let left = Math.min(count ?? total, total);
+    for (const stack of bot.inventory.items().filter((i) => i.name === item)) {
+      if (left <= 0) break;
+      const n = Math.min(left, stack.count);
+      await bot.toss(stack.type, null, n);
+      left -= n;
+    }
+    return `dropped ${Math.min(count ?? total, total) - left} ${item}`;
   },
 
   async give(bot, { player, item, count }, { check }) {
