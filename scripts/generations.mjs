@@ -131,6 +131,9 @@ async function reset(director, s) {
 async function runScenario(director, s, generation) {
   const agent = new Agent(config);
   agent.log = (m) => console.log(`  [${s.name}] ${m}`);
+  // The brain first wakes once the scene is set, so it doesn't plan around
+  // the previous scenario's place and inventory.
+  agent.holdFirstWake = true;
   agent.start();
   const started = Date.now();
   while (!agent.bot?.entity || !agent.experience.run || !agent.rules) {
@@ -142,6 +145,7 @@ async function runScenario(director, s, generation) {
   agent.executor.setGoal({ type: 'idle', seconds: 3 });
   await reset(director, s);
   await run(director, s.setup);
+  agent.wake('a new scenario just started: you were moved, and your health, inventory and surroundings changed. Go by this observation, not by what you remember of before');
   const before = { ...agent.experience.run };
   const t0 = Date.now();
   let died = false;
