@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "test": "node test/players.test.mjs && node test/goals.test.mjs && node test/skills.test.mjs",
-    "start": "node src/index.js"
+    "start": "node src/supervise.js",
+    "start:once": "node src/index.js"
   },
   "keywords": [],
   "author": "",
