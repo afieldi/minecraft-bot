@@ -10,6 +10,7 @@ import { Executor, equipShield } from './actions.js';
 import { Reflexes } from './reflexes.js';
 import { JevClient } from './jev.js';
 import { Brain } from './brain.js';
+import { Arbiter } from './arbiter.js';
 import { SkillLibrary, registerSkillGoals } from './skills.js';
 import { reflexState, worldSnapshot, hostilesNear, foodItems, isRanged, hasShield, bestWeapon } from './perception.js';
 
@@ -24,7 +25,7 @@ const LOW_HEALTH = 8;
 const DUSK_START = 11500;
 const DUSK_END = 13000;
 const LOW_AIR = 14; // of 20 bubbles; digging out of a flooded pit takes a while
-const RETREAT_COOLDOWN_MS = 20000;
+const BEHAVIOUR_WAKE_COOLDOWN_MS = 30000;
 // Pathfinding inside collectBlock can run away (e.g. a tool breaks mid-goal)
 // and take the process out of memory; abort the goal well before that.
 const HEAP_LIMIT_BYTES = 1.5e9;
@@ -92,9 +93,12 @@ export class Agent {
     this.skills = new SkillLibrary(this.memory);
     registerSkillGoals(this.skills);
     this.brain = new Brain({ bot, memory: this.memory, players: this.players, executor: this.executor, skills: this.skills, config: this.cfg.brain, log });
+    this.arbiter = new Arbiter();
+    this.arbiter.addProvider(() => this.#builtinBehaviours());
     this.lastEscalation = 0;
     this.lastWake = 0;
     this.threatAlerted = new Map();
+    this.behaviourWoke = new Map();
 
     // Every process start is a new brain instance.
     this.memory.state.generation++;
@@ -217,37 +221,12 @@ export class Agent {
     this.ticking = true;
     try {
       this.players.update();
-      if (this.bot.oxygenLevel !== undefined && this.bot.oxygenLevel <= LOW_AIR && this.bot.entity.isInWater && !this.executor.reflexRunning) {
-        this.log(`reflex: surface (air ${this.bot.oxygenLevel}/20)`);
-        this.executor.reflex('surface', {});
-        this.executor.setGoal({ type: 'idle', seconds: 10 });
-        if (Date.now() - (this.lastAirWake ?? 0) > 30000) {
-          this.lastAirWake = Date.now();
-          this.wake(`you were drowning (air ${this.bot.oxygenLevel}/20); your body swam for air. Don't go back through that water, even for dropped items`);
+      if (!this.executor.reflexRunning) {
+        const pick = this.arbiter.choose({});
+        if (pick) {
+          this.#act(pick);
+          return;
         }
-        return;
-      }
-      // Being shot: Jev tended to keep "continue_goal" while a skeleton picked
-      // us apart. Engage behind the shield (or while still healthy), otherwise
-      // wall in to break line of sight.
-      const archer = hostilesNear(this.bot, 16).find((h) => isRanged(h.entity));
-      if (archer && Date.now() - (this.lastHurtAt ?? 0) < 1500 && !this.executor.reflexRunning) {
-        const engage = bestWeapon(this.bot) && (hasShield(this.bot) || this.bot.health > 12);
-        this.log(`reflex: ${engage ? 'fight' : 'retreat'} (shot by ${archer.name}, health ${this.bot.health.toFixed(1)})`);
-        this.executor.reflex(engage ? 'fight' : 'retreat', { memory: this.memory });
-        return;
-      }
-      // Only take over when retreating helps: something is near, or there's food
-      // to eat. Low health with neither means the brain needs to go hunt.
-      const canHelp = hostilesNear(this.bot, 12).length > 0 || (this.bot.food < 20 && foodItems(this.bot).length > 0);
-      if (this.bot.health <= LOW_HEALTH && canHelp && !this.executor.reflexRunning && Date.now() - (this.lastRetreat ?? 0) > RETREAT_COOLDOWN_MS) {
-        this.lastRetreat = Date.now();
-        this.log(`reflex: retreat (health ${this.bot.health.toFixed(1)})`);
-        this.executor.reflex('retreat', { memory: this.memory });
-        // Don't resume whatever got us hurt (e.g. a deep mine) once the reflex ends.
-        this.executor.setGoal({ type: 'idle', seconds: 30 });
-        this.wake(`your health is low (${this.bot.health.toFixed(1)}/20); your body is retreating, walling in and eating. Recover before doing anything risky`);
-        return;
       }
       const state = reflexState(this.bot, this.players, this.executor);
       const d = await this.reflexes.decide(state);
@@ -275,6 +254,70 @@ export class Agent {
     } finally {
       this.ticking = false;
     }
+  }
+
+  // Hand the body to a behaviour the arbiter picked. The brain's goal is
+  // suspended, not replaced, and resumes after the reflex and its hold.
+  #act(pick) {
+    this.log(`reflex: ${pick.action} (${pick.source}${pick.reason ? ': ' + pick.reason : ''})`);
+    this.executor.reflex(pick.action, { memory: this.memory, ...(pick.ctx ?? {}) }, { holdSeconds: pick.holdSeconds ?? 0 });
+    if (pick.wake && Date.now() - (this.behaviourWoke.get(pick.behaviour) ?? 0) > BEHAVIOUR_WAKE_COOLDOWN_MS) {
+      this.behaviourWoke.set(pick.behaviour, Date.now());
+      this.wake(pick.wake);
+    }
+  }
+
+  // Survival checks that run ahead of Jev. These are hand-written strategy and
+  // are meant to be replaced by rules the bot learns.
+  #builtinBehaviours() {
+    const bot = this.bot;
+    return [
+      {
+        name: 'surface',
+        priority: 100,
+        applies: () => {
+          if (bot.oxygenLevel === undefined || bot.oxygenLevel > LOW_AIR || !bot.entity.isInWater) return null;
+          return {
+            action: 'surface',
+            holdSeconds: 10,
+            reason: `air ${bot.oxygenLevel}/20`,
+            wake: `you were drowning (air ${bot.oxygenLevel}/20); your body swam for air. Don't go back through that water, even for dropped items`,
+          };
+        },
+      },
+      {
+        // Being shot: Jev tended to keep "continue_goal" while a skeleton
+        // picked us apart. Engage behind the shield (or while still healthy),
+        // otherwise wall in to break line of sight.
+        name: 'archer',
+        priority: 90,
+        applies: () => {
+          const archer = hostilesNear(bot, 16).find((h) => isRanged(h.entity));
+          if (!archer || Date.now() - (this.lastHurtAt ?? 0) >= 1500) return null;
+          const engage = bestWeapon(bot) && (hasShield(bot) || bot.health > 12);
+          return { action: engage ? 'fight' : 'retreat', reason: `shot by ${archer.name}, health ${bot.health.toFixed(1)}` };
+        },
+      },
+      {
+        // Only take over when retreating helps: something is near, or there's
+        // food to eat. Low health with neither means the brain needs to go hunt.
+        name: 'low_health',
+        priority: 80,
+        cooldownSeconds: 20,
+        applies: () => {
+          if (bot.health > LOW_HEALTH) return null;
+          const canHelp = hostilesNear(bot, 12).length > 0 || (bot.food < 20 && foodItems(bot).length > 0);
+          if (!canHelp) return null;
+          return {
+            action: 'retreat',
+            // Don't resume whatever got us hurt straight away.
+            holdSeconds: 30,
+            reason: `health ${bot.health.toFixed(1)}`,
+            wake: `your health is low (${bot.health.toFixed(1)}/20); your body is retreating, walling in and eating. Recover before doing anything risky`,
+          };
+        },
+      },
+    ];
   }
 
   #reflexContext(d) {

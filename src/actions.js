@@ -60,19 +60,33 @@ export class Executor {
 
   describe() {
     if (!this.goal) return 'none';
-    const { type, ...args } = this.goal;
-    return `${type} ${JSON.stringify(args)}`;
+    const { type, progress, ...args } = this.goal;
+    const paused = this.reflexRunning ? ` (paused for ${this.reflexAction})` : this.holdTimer ? ` (paused, resumes in ${Math.ceil((this.holdUntil - Date.now()) / 1000)}s)` : '';
+    return `${type} ${JSON.stringify(args)}${paused}`;
   }
 
   setGoal(goal) {
     // While a reflex (fight/flee) owns the body, don't yank it away mid-combat:
-    // the new goal starts when the reflex finishes.
+    // the new goal starts when the reflex finishes. A new goal also ends any
+    // recovery hold, since whoever set it has decided what to do next.
+    this.#clearHold();
     if (!this.reflexRunning) this.#stopMotion();
     if (this.token) this.token.cancelled = true;
     this.goal = goal;
     this.memory.state.goal = goal;
     this.memory.saveState();
     if (!this.reflexRunning) this.#start();
+  }
+
+  // True while the brain's goal is paused, by a reflex or the hold after one.
+  get suspended() {
+    return this.reflexRunning || !!this.holdTimer;
+  }
+
+  #clearHold() {
+    clearTimeout(this.holdTimer);
+    this.holdTimer = null;
+    this.holdUntil = 0;
   }
 
   #start() {
@@ -109,21 +123,34 @@ export class Executor {
     bot.clearControlStates();
   }
 
-  // Run a reflex action, pausing the goal around it.
-  async reflex(action, ctx = {}) {
-    if (this.reflexRunning || action === 'continue_goal') return;
+  // Run a reflex action, suspending the goal around it. The goal is kept and
+  // resumes afterwards (after holdSeconds, if given, to recover); a step list
+  // picks up from its last finished step rather than starting over.
+  async reflex(action, ctx = {}, { holdSeconds = 0 } = {}) {
+    if (this.reflexRunning || action === 'continue_goal') return { ok: false, skipped: true };
     this.reflexRunning = true;
+    this.reflexAction = action;
+    this.#clearHold();
     if (this.token) this.token.cancelled = true;
     this.#stopMotion();
+    let result = { ok: true };
     try {
       await REFLEXES[action]?.(this.bot, ctx);
     } catch (err) {
+      result = { ok: false, error: err.message };
       this.log(`reflex ${action} failed: ${err.message}`);
     } finally {
       this.#stopMotion();
       this.reflexRunning = false;
-      this.#start(); // resume the goal
+      this.reflexAction = null;
+      if (holdSeconds > 0 && this.goal) {
+        this.holdUntil = Date.now() + holdSeconds * 1000;
+        this.holdTimer = setTimeout(() => { this.holdTimer = null; this.#start(); }, holdSeconds * 1000);
+      } else {
+        this.#start(); // resume the goal
+      }
     }
+    return result;
   }
 
   async #run(goal, token) {

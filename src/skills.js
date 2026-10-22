@@ -254,8 +254,24 @@ export async function runSteps(steps, args, ctx) {
     ctx.check();
     if (Date.now() > deadline) throw new Error('ran out of time');
   };
-  const api = makeApi({ ...ctx, guard });
+  const { resume, ...rest } = ctx;
+  const api = makeApi({ ...rest, guard });
   const vars = { args: args ?? {}, last: null, __inv: (name) => countItem(ctx.bot, (i) => i.name === name) };
+  // A reflex suspends the goal and reruns it afterwards. `resume` (the goal
+  // object) carries how far the top-level steps got, so a rerun continues from
+  // the first unfinished one with the same variables instead of repeating
+  // finished steps (and their side effects, like deposits or chat).
+  let startAt = 0;
+  if (resume?.progress) {
+    startAt = resume.progress.next;
+    Object.assign(vars, resume.progress.vars);
+  }
+  const checkpoint = (next) => {
+    if (!resume) return;
+    const saved = {};
+    for (const [k, v] of Object.entries(vars)) if (k !== '__inv') saved[k] = v;
+    resume.progress = { next, vars: JSON.parse(JSON.stringify(saved)) };
+  };
 
   const call = async (step) => {
     const params = ACTIONS[step.do];
@@ -278,8 +294,9 @@ export async function runSteps(steps, args, ctx) {
     }
   };
 
-  const exec = async (list) => {
-    for (const s of list) {
+  const exec = async (list, top = false) => {
+    for (let idx = top ? startAt : 0; idx < list.length; idx++) {
+      const s = list[idx];
       if (--budget < 0) throw new Error(`step budget of ${MAX_STEPS} used up`);
       guard();
       if ('do' in s) {
@@ -319,12 +336,13 @@ export async function runSteps(steps, args, ctx) {
       } else if ('fail' in s) {
         throw new Error(String(evaluate(s.fail, vars)));
       }
+      if (top) checkpoint(idx + 1);
     }
   };
 
   let result = 'done';
   try {
-    await exec(steps);
+    await exec(steps, true);
   } catch (err) {
     if (!(err instanceof Return)) {
       if (logs.length) err.message += `\nlog:\n${logs.slice(-20).join('\n')}`;
@@ -504,7 +522,7 @@ export function registerSkillGoals(library) {
   GOALS.skill = async (bot, g, ctx) => {
     const steps = library.read(g.name);
     try {
-      const out = await runSteps(steps, g.args, { ...ctx, bot, library, timeoutS: g.timeoutSeconds });
+      const out = await runSteps(steps, g.args, { ...ctx, bot, library, timeoutS: g.timeoutSeconds, resume: g });
       library.record(g.name, true);
       return out;
     } catch (err) {
@@ -512,5 +530,5 @@ export function registerSkillGoals(library) {
       throw err;
     }
   };
-  GOALS.steps = (bot, g, ctx) => runSteps(g.steps, g.args, { ...ctx, bot, library, timeoutS: g.timeoutSeconds });
+  GOALS.steps = (bot, g, ctx) => runSteps(g.steps, g.args, { ...ctx, bot, library, timeoutS: g.timeoutSeconds, resume: g });
 }
