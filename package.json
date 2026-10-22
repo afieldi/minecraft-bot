@@ -4,7 +4,7 @@
   "description": "Minecraft bot with a Claude brain, Jev reflexes and on-disk memory",
   "main": "index.js",
   "scripts": {
-    "test": "node test/players.test.mjs && node test/goals.test.mjs && node test/skills.test.mjs && node test/arbiter.test.mjs && node test/experience.test.mjs && node test/rules.test.mjs",
+    "test": "node test/players.test.mjs && node test/goals.test.mjs && node test/skills.test.mjs && node test/arbiter.test.mjs && node test/experience.test.mjs && node test/rules.test.mjs && node test/brain.test.mjs",
     "start": "node src/supervise.js",
     "start:once": "node src/index.js"
   },

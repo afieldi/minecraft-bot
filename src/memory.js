@@ -79,9 +79,22 @@ export class Memory {
   remember(category, text) {
     const item = { id: this.knowledge.nextId++, category, text, t: new Date().toISOString() };
     this.knowledge.items.push(item);
-    if (this.knowledge.items.length > MAX_KNOWLEDGE) {
-      this.knowledge.items.splice(0, this.knowledge.items.length - MAX_KNOWLEDGE);
+    // Over the limit, drop the oldest unpinned items.
+    let excess = this.knowledge.items.length - MAX_KNOWLEDGE;
+    if (excess > 0) {
+      this.knowledge.items = this.knowledge.items.filter((k) => k.pinned || excess-- <= 0);
     }
+    this.writeJson('knowledge.json', this.knowledge);
+    return item;
+  }
+
+  updateKnowledge(id, { text, category, pinned }) {
+    const item = this.knowledge.items.find((k) => k.id === id);
+    if (!item) return null;
+    if (text) item.text = text;
+    if (category) item.category = category;
+    if (pinned !== undefined) item.pinned = !!pinned;
+    item.t = new Date().toISOString();
     this.writeJson('knowledge.json', this.knowledge);
     return item;
   }
@@ -151,10 +164,16 @@ export class Memory {
   }
 
   // The briefing a fresh brain instance starts with.
-  digest(playerSummary, skillSummary, ruleSummary) {
-    const knowledge = this.knowledge.items
-      .slice(-120)
-      .map((k) => `- [#${k.id} ${k.category}] ${k.text}`)
+  // scoreOf(key) returns the experience score for "lesson:<id>", if any.
+  digest(playerSummary, skillSummary, ruleSummary, scoreOf = () => null) {
+    const pinned = this.knowledge.items.filter((k) => k.pinned);
+    const rest = this.knowledge.items.filter((k) => !k.pinned).slice(-Math.max(20, 120 - pinned.length));
+    const knowledge = [...pinned, ...rest]
+      .map((k) => {
+        const s = scoreOf(`lesson:${k.id}`);
+        const record = s ? ` (followed ${s.uses}x: ${s.helped} helped, ${s.hurt} hurt)` : '';
+        return `- [#${k.id} ${k.category}${k.pinned ? ', pinned' : ''}] ${k.text}${record}`;
+      })
       .join('\n');
     const locations = Object.entries(this.locations)
       .map(([n, l]) => `- ${n}: ${l.x} ${l.y} ${l.z} (${l.dimension})${l.note ? ' - ' + l.note : ''}`)

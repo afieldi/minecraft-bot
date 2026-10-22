@@ -1,11 +1,13 @@
-// The LLM "brain": a model on OpenRouter (Claude by default) that sets
-// goals, talks to players and decides what to remember. It is woken by events (chat, damage, a goal
-// finishing, a new player) and by a slow heartbeat, never every tick.
+// The LLM "brain": a model on OpenRouter that sets goals, talks to players,
+// writes its own reflex rules and skills, and decides what to remember. It is
+// woken by events (chat, damage, a goal finishing, a new player, a death) and
+// by a slow heartbeat, never every tick.
 //
-// Each brain instance is one conversation. When the bot sleeps, or the
-// conversation grows past BRAIN_CONTEXT_LIMIT tokens, the current instance
-// writes a handoff note to disk and a fresh instance starts from the memory
-// files alone.
+// The prompt is rebuilt on every wake from the memory files plus the last few
+// wake-ups, so cost per call stays flat and anything the bot learned is in
+// effect at once. Waking from a bed ends a "generation": the brain
+// consolidates its lessons and writes a handoff note before its short-term
+// history is cleared.
 import { GOAL_TYPES } from './actions.js';
 import { inventorySummary, briefState } from './perception.js';
 import { SKILL_DOCS } from './skills.js';
@@ -17,7 +19,8 @@ const SYSTEM = `You are the mind of a Minecraft player bot on a multiplayer surv
 How you work:
 - Each observation tells you why you were woken. Respond with tool calls, then stop. Keep visible text short; nobody reads it.
 - Use set_goal to give the body one concrete goal at a time. Goals run until they finish or fail, and you will be told the result. Break big ambitions into a plan with set_plan and work through it.
-- Your memory does not survive on its own. Anything worth knowing later (where things are, what worked, what failed, promises you made, who is trustworthy) must be saved with remember, note_player or save_location. When you sleep or your context fills up, a new instance of you starts from those files plus a handoff note.
+- You only see your last few wake-ups. Your memory files (lessons, places, people, rules, skills) are re-read every time you wake. Anything worth knowing later (where things are, what worked, what failed, promises you made, who is trustworthy) must be saved with remember, note_player or save_location, or it is gone in a few minutes.
+- You learn from outcomes. Your rules, skills and lessons each carry a record of how they turned out. After a death or a failure you are shown what happened; turn it into a better rule, skill or lesson. Cite the lessons a goal follows (set_goal lessons) so they get scored too.
 
 Skills:
 - Beyond the built-in goals you can do anything the general actions allow by writing a step list (format below). Try new things with run_steps: it runs right away and shows you the result or the error, so you can fix and retry.
@@ -92,6 +95,15 @@ const TOOLS = [
         text: { type: 'string' },
       },
       required: ['category', 'text'],
+    },
+  },
+  {
+    name: 'update_lesson',
+    description: 'Rewrite a remembered item by its #id, or pin it so it is always in your briefing and never dropped.',
+    input_schema: {
+      type: 'object',
+      properties: { id: { type: 'integer' }, text: { type: 'string' }, category: { type: 'string' }, pinned: { type: 'boolean' } },
+      required: ['id'],
     },
   },
   {
@@ -222,7 +234,9 @@ export class Brain {
     this.executor = executor;
     this.cfg = config;
     this.log = log;
-    this.messages = [];
+    // Short-term memory: one entry per wake-up, each the list of messages it
+    // produced. Only the last historyWakes are sent.
+    this.history = [];
     this.busy = false;
     this.pending = null;
     this.contextTokens = 0;
@@ -243,11 +257,8 @@ export class Brain {
     try {
       const view = typeof snapshot === 'function' ? snapshot() : snapshot;
       const text = `[${new Date().toISOString().slice(11, 19)}] Woken because: ${reasons.join('; ')}\nObservation: ${JSON.stringify(view)}`;
-      if (this.messages.length === 0) {
-        this.#appendUser(this.memory.digest(this.players.summary(), this.skills.summary(), this.rules?.summary()) + '\n\n' + text);
-      } else {
-        this.#appendUser(text);
-      }
+      this.history.push([{ role: 'user', content: [{ type: 'text', text }] }]);
+      if (this.history.length > this.cfg.historyWakes) this.history.splice(0, this.history.length - this.cfg.historyWakes);
       await this.#loop();
       await this.#maybeRotate();
     } catch (err) {
@@ -272,8 +283,6 @@ export class Brain {
       const reason = this.rotateRequested;
       this.rotateRequested = null;
       await this.rotate(reason);
-    } else if (this.contextTokens > this.cfg.contextLimit) {
-      await this.rotate('context full');
     }
   }
 
@@ -286,10 +295,28 @@ export class Brain {
     }
   }
 
+  // Messages of the wake-up in progress.
+  get #turn() {
+    if (!this.history.length) this.history.push([]);
+    return this.history.at(-1);
+  }
+
   #appendUser(text) {
-    const last = this.messages.at(-1);
+    const turn = this.#turn;
+    const last = turn.at(-1);
     if (last?.role === 'user') last.content.push({ type: 'text', text });
-    else this.messages.push({ role: 'user', content: [{ type: 'text', text }] });
+    else turn.push({ role: 'user', content: [{ type: 'text', text }] });
+  }
+
+  // What is sent: the memory briefing, freshly built, in front of the recent
+  // wake-ups. Each wake-up starts with a user message and keeps its tool calls
+  // and results together, so trimming whole wake-ups keeps the history valid.
+  #prompt() {
+    const flat = this.history.flat();
+    const digest = this.memory.digest(this.players.summary(), this.skills.summary(), this.rules?.summary(), (key) => this.experience?.score(key));
+    const first = flat[0];
+    const briefing = { type: 'text', text: `${digest}\n\n# Your recent wake-ups (oldest first)` };
+    return [{ ...first, content: [briefing, ...first.content] }, ...flat.slice(1)];
   }
 
   // OpenRouter chat completions. Anthropic models need explicit cache
@@ -299,8 +326,9 @@ export class Brain {
   async #call() {
     const mark = this.cfg.model.startsWith('anthropic/');
     const cache = mark ? { cache_control: { type: 'ephemeral' } } : {};
-    const messages = this.messages.map((m, i) => {
-      if (!mark || i !== this.messages.length - 1 || !Array.isArray(m.content) || !m.content.length) return m;
+    const prompt = this.#prompt();
+    const messages = prompt.map((m, i) => {
+      if (!mark || i !== prompt.length - 1 || !Array.isArray(m.content) || !m.content.length) return m;
       const content = m.content.map((b, j) => (j === m.content.length - 1 ? { ...b, cache_control: { type: 'ephemeral' } } : b));
       return { ...m, content };
     });
@@ -338,14 +366,14 @@ export class Brain {
       const msg = choice.message ?? {};
       if (choice.finish_reason === 'content_filter') {
         this.log('brain: request declined, skipping this wake-up');
-        this.messages.push({ role: 'assistant', content: '(no response)' });
+        this.#turn.push({ role: 'assistant', content: '(no response)' });
         return;
       }
       // Keep reasoning_details unmodified so reasoning carries across tool calls.
       const turn = { role: 'assistant', content: msg.content ?? '' };
       if (msg.tool_calls?.length) turn.tool_calls = msg.tool_calls;
       if (msg.reasoning_details) turn.reasoning_details = msg.reasoning_details;
-      this.messages.push(turn);
+      this.#turn.push(turn);
       if (typeof msg.content === 'string' && msg.content.trim()) this.log(`brain: ${msg.content.trim()}`);
       const calls = msg.tool_calls ?? [];
       if (!calls.length) return;
@@ -362,7 +390,7 @@ export class Brain {
           isError = true;
         }
         this.log(`brain -> ${name} ${JSON.stringify(input)}${isError ? ' (' + out + ')' : ''}`);
-        this.messages.push({ role: 'tool', tool_call_id: call.id, content: String(out) });
+        this.#turn.push({ role: 'tool', tool_call_id: call.id, content: String(out) });
       }
     }
   }
@@ -388,6 +416,10 @@ export class Brain {
         return 'sent';
       case 'remember':
         return `remembered as #${memory.remember(input.category, input.text).id}`;
+      case 'update_lesson': {
+        const item = memory.updateKnowledge(input.id, { text: input.text, category: input.category, pinned: input.pinned });
+        return item ? `updated #${item.id}${item.pinned ? ' (pinned)' : ''}` : `no memory #${input.id}`;
+      }
       case 'forget':
         return memory.forget(input.id) ? 'forgotten' : `no memory #${input.id}`;
       case 'note_player': {
@@ -473,16 +505,19 @@ export class Brain {
     });
   }
 
-  // End this instance and start a fresh one that only has the memory files.
+  // End a generation (after sleeping): consolidate what was learned, write a
+  // handoff note, and clear the short-term history.
   async rotate(reason) {
-    if (this.messages.length === 0) return;
-    this.log(`brain: rotating instance (${reason})`);
+    if (!this.history.length) return;
+    this.log(`brain: ending generation ${this.memory.state.generation} (${reason})`);
     this.rotatingFor = reason;
     this.handoffWritten = false;
+    this.history.push([]);
     this.#appendUser(
-      `Your instance is ending (${reason}). A fresh instance of you will start with only your memory files. ` +
-        'Save anything important that is not saved yet with remember / note_player / save_location, then call write_handoff with: ' +
-        'what you were doing and why, your plan, open promises to players, and lessons from this session.',
+      `Your generation is ending (${reason}). Your short-term history will be cleared. Before that, consolidate what you know:\n` +
+        '- Merge duplicate or overlapping remembered items into one (update_lesson the keeper, forget the rest), drop ones that turned out wrong, and pin the few that must never be lost (your base, key dangers, promises).\n' +
+        '- Look at your rules\' and skills\' records: fix or delete the ones that keep hurting you.\n' +
+        '- Then call write_handoff with what you were doing and why, your plan, open promises to players, and what you learned this generation.',
     );
     try {
       await this.#loop();
@@ -495,7 +530,7 @@ export class Brain {
     this.memory.state.generation++;
     this.memory.saveState();
     this.memory.log('brain_rotated', { reason, generation: this.memory.state.generation });
-    this.messages = [];
+    this.history = [];
     this.contextTokens = 0;
     this.rotatingFor = null;
   }

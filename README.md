@@ -36,7 +36,11 @@ Everything lives in `data/<bot name>/` and survives restarts:
 - `handoffs.md`: the note each brain instance writes for the next one
 - `journal.jsonl`: an event log
 
-**New brain instances.** When the bot wakes up from sleeping in a bed, or the conversation passes `BRAIN_CONTEXT_LIMIT` tokens, the current brain conversation is asked to save anything outstanding and write a handoff note. Then a fresh conversation starts with only the memory files as its briefing. Restarting the process also starts a fresh instance.
+**Short-term memory.** The brain sees only its last few wake-ups (`BRAIN_HISTORY_WAKES`, default 6). Its briefing (lessons, places, people, rules, skills, recent events) is rebuilt from these files on every wake, so cost per call stays flat and anything it learns applies at once.
+
+**Generations.** Waking from a bed ends a generation: the brain merges and pins its lessons, fixes or drops rules and skills with bad records, writes a handoff note, and its short-term history is cleared. Restarting the process also starts a new generation.
+
+**Reflection.** After a death (and after a failed goal that cost health) the brain is shown what happened decision by decision, with the record of every rule, skill and lesson involved, and asked what would have prevented it.
 
 ## Playing nicely with others
 

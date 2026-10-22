@@ -16,7 +16,8 @@ export const config = {
     baseUrl: (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api').replace(/\/$/, ''),
     model: process.env.BRAIN_MODEL || 'deepseek/deepseek-v4.1-flash',
     effort: process.env.BRAIN_EFFORT || 'medium',
-    contextLimit: num(process.env.BRAIN_CONTEXT_LIMIT, 150000),
+    // How many recent wake-ups the brain sees; older ones live only in memory files.
+    historyWakes: num(process.env.BRAIN_HISTORY_WAKES, 6),
     heartbeatMs: num(process.env.BRAIN_HEARTBEAT_SECONDS, 45) * 1000,
     maxToolRounds: 8,
     enabled: process.env.BRAIN_DISABLED !== '1',
