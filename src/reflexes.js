@@ -33,7 +33,7 @@ export class Reflexes {
     const hostiles = hostilesNear(this.bot, 12);
     const attackers = this.players.nearby(10).filter((p) => p.attackedMeRecently);
     if (hostiles.length || attackers.length || this.players.nearby(16).some((p) => p.relation === 'hostile')) c.push('flee');
-    if (hostiles.some((h) => h.distance < 8)) c.push('fight');
+    if (hostiles.some((h) => h.distance < 8) && this.bot.health > 8) c.push('fight');
     if (attackers.length) c.push('defend');
     if (this.bot.food < 18 && foodItems(this.bot).length) c.push('eat');
     if (this.players.nearby(6).some((p) => p.relation !== 'hostile')) c.push('face_player');

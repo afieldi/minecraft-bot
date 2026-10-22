@@ -125,4 +125,14 @@ r = await run(ex2, { type: 'smelt', input: 'iron_ore', count: 1 });
 assert.equal(r.ok, false);
 assert.match(r.message, /no iron_ore/);
 
+// --- collect won't go below y=20 without armor and food
+const bot3 = makeBot({ bread: 1 });
+bot3.registry.blocksByName.diamond_ore = { id: 103, name: 'diamond_ore' };
+bot3.registry.blocks = { 103: { name: 'diamond_ore', drops: [] } };
+bot3.inventory.slots = [];
+bot3.findBlocks = () => [new Vec3(3, 12, 3)];
+r = await run(new Executor(bot3, new Memory(dir, 'T3')), { type: 'collect', block: 'diamond_ore', count: 1 });
+assert.equal(r.ok, false);
+assert.match(r.message, /below y=20/);
+
 console.log('goals.test: all assertions passed');
