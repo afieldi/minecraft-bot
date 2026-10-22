@@ -11,7 +11,7 @@ import { Reflexes } from './reflexes.js';
 import { JevClient } from './jev.js';
 import { Brain } from './brain.js';
 import { SkillLibrary, registerSkillGoals } from './skills.js';
-import { reflexState, worldSnapshot } from './perception.js';
+import { reflexState, worldSnapshot, hostilesNear, foodItems } from './perception.js';
 
 const { pathfinder, Movements } = pathfinderPkg;
 const ESCALATE_COOLDOWN_MS = 20000;
@@ -22,6 +22,9 @@ const MIN_REFLEX_CONFIDENCE = 0.3;
 // Below this the body retreats on its own; the brain is too slow to react in time.
 const LOW_HEALTH = 8;
 const RETREAT_COOLDOWN_MS = 20000;
+// Pathfinding inside collectBlock can run away (e.g. a tool breaks mid-goal)
+// and take the process out of memory; abort the goal well before that.
+const HEAP_LIMIT_BYTES = 1.5e9;
 // The server's player hitbox is 0.6 wide as a float (0.60000002), so a body
 // that stops exactly flush with a block (as prismarine-physics does at 0.3
 // half-width) overlaps it by ~1e-8 there. Paper treats that as clipping into
@@ -116,6 +119,15 @@ export class Agent {
 
     this.reflexTimer = setInterval(() => this.#tick(), this.cfg.reflexIntervalMs);
     this.heartbeatTimer = setInterval(() => {
+      if (process.memoryUsage().heapUsed > HEAP_LIMIT_BYTES && this.executor.goal && Date.now() - (this.lastHeapAbort ?? 0) > 30000) {
+        this.lastHeapAbort = Date.now();
+        const goal = this.executor.describe();
+        this.log(`memory runaway during ${goal}; aborting it`);
+        try { bot.pathfinder.setGoal(null); } catch {}
+        this.executor.setGoal({ type: 'idle', seconds: 5 });
+        this.wake(`your goal (${goal}) was aborted because pathfinding ran away; try something else or check your tools`);
+        return;
+      }
       const quiet = Date.now() - this.lastWake;
       if (!this.executor.goal && quiet > this.cfg.brain.heartbeatMs) this.wake('no current goal');
       else if (quiet > this.cfg.brain.heartbeatMs * 4) this.wake('routine check-in');
@@ -184,7 +196,10 @@ export class Agent {
     this.ticking = true;
     try {
       this.players.update();
-      if (this.bot.health <= LOW_HEALTH && !this.executor.reflexRunning && Date.now() - (this.lastRetreat ?? 0) > RETREAT_COOLDOWN_MS) {
+      // Only take over when retreating helps: something is near, or there's food
+      // to eat. Low health with neither means the brain needs to go hunt.
+      const canHelp = hostilesNear(this.bot, 12).length > 0 || (this.bot.food < 20 && foodItems(this.bot).length > 0);
+      if (this.bot.health <= LOW_HEALTH && canHelp && !this.executor.reflexRunning && Date.now() - (this.lastRetreat ?? 0) > RETREAT_COOLDOWN_MS) {
         this.lastRetreat = Date.now();
         this.log(`reflex: retreat (health ${this.bot.health.toFixed(1)})`);
         this.executor.reflex('retreat', { memory: this.memory });
