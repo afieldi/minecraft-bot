@@ -140,6 +140,15 @@ function normalize(r) {
   if (!ID_RE.test(r.id ?? '')) throw new Error('rule ids are lowercase letters, digits and underscores, starting with a letter');
   if (!REFLEXES[r.do]) throw new Error(`"do" must be one of: ${Object.keys(REFLEXES).join(', ')}`);
   if (r.when === undefined || r.when === null) throw new Error('a rule needs a "when" condition');
+  // Models sometimes send the condition as JSON text; a plain string would
+  // always be true.
+  if (typeof r.when === 'string' && !r.when.startsWith('$')) {
+    try {
+      r = { ...r, when: JSON.parse(r.when) };
+    } catch {
+      throw new Error('"when" must be a condition object (or a "$variable"), not text');
+    }
+  }
   const priority = Number(r.priority ?? 50);
   if (!(priority >= 0 && priority <= 100)) throw new Error('priority must be between 0 and 100');
   const out = { id: r.id, description: String(r.description ?? ''), when: r.when, do: r.do, priority };

@@ -14,7 +14,7 @@ import { Arbiter } from './arbiter.js';
 import { Experience, describeRecord } from './experience.js';
 import { RuleBook } from './rules.js';
 import { SkillLibrary, registerSkillGoals } from './skills.js';
-import { briefState, ruleState, reflexState, worldSnapshot } from './perception.js';
+import { briefState, ruleState, reflexState, worldSnapshot, trackOwnAir } from './perception.js';
 
 const { pathfinder, Movements } = pathfinderPkg;
 const ESCALATE_COOLDOWN_MS = 20000;
@@ -73,6 +73,7 @@ export class Agent {
     const log = (m) => this.log(m);
     bot.physics.playerHalfWidth = HALF_WIDTH;
     this.#watchSnapbacks();
+    trackOwnAir(bot);
     const movements = new Movements(bot);
     movements.allowSprinting = true;
     // Swimming through water got the bot trapped and drowned in flooded caves;

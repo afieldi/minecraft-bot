@@ -391,6 +391,7 @@ export class Brain {
           out = `error: ${err.message}`;
           isError = true;
         }
+        if (this.stopped) return; // the bot left while this tool ran
         this.log(`brain -> ${name} ${JSON.stringify(input)}${isError ? ' (' + out + ')' : ''}`);
         this.#turn.push({ role: 'tool', tool_call_id: call.id, content: String(out) });
       }
