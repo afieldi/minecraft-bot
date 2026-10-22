@@ -125,6 +125,9 @@ export class Agent {
     this.wake(this.memory.state.generation === 1 ? 'you just joined the world for the first time' : 'you just reconnected');
 
     this.reflexTimer = setInterval(() => this.#tick(), this.cfg.reflexIntervalMs);
+    this.statsTimer = setInterval(() => {
+      this.log(`stats: heap ${(process.memoryUsage().heapUsed / 1e6).toFixed(0)} MB, goal ${this.executor.describe()}`);
+    }, 60000);
     this.heartbeatTimer = setInterval(() => {
       // Keep a shield in the off-hand whenever we own one.
       if (!this.executor.reflexRunning && bot.inventory.slots[45]?.name !== 'shield') equipShield(bot).catch(() => {});
@@ -171,6 +174,7 @@ export class Agent {
   #teardown() {
     clearInterval(this.reflexTimer);
     clearInterval(this.heartbeatTimer);
+    clearInterval(this.statsTimer);
     this.players?.save();
     this.memory.saveState();
   }
